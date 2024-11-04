@@ -7,6 +7,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const mod = b.addModule("zart", .{
+        .optimize = optimize,
+        .target = target,
+    });
+    _ = mod;
+
     const lib = b.addStaticLibrary(.{
         .name = "zart",
         // In this case the main source file is merely a path, however, in more
