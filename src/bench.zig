@@ -46,7 +46,7 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
             _ = linei;
             if (@TypeOf(_container) == *Art(usize)) {
                 const result = del_fn(_container, line);
-                try std.testing.expect(result);
+                try std.testing.expect(result != null);
             } else {
                 const result = del_fn(_container, line);
                 try std.testing.expect(result);

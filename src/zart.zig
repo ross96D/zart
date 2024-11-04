@@ -283,15 +283,17 @@ pub fn Tree(comptime T: type) type {
                 child.destroy(false);
             }
 
-            fn remove_leaf(self: *Node) void {
+            fn remove_leaf(self: *Node) T {
                 assert(self.leaf != null);
+
+                const v = self.leaf.?.value;
                 self.partial.allocator.destroy(self.leaf.?);
                 self.leaf = null;
                 const num_childs = self.childs();
-                if (num_childs != 1) {
-                    return;
+                if (num_childs == 1) {
+                    self.merge();
                 }
-                self.merge();
+                return v;
             }
         };
         const Node4 = struct {
@@ -593,11 +595,12 @@ pub fn Tree(comptime T: type) type {
             return null;
         }
 
-        pub fn set(self: *ARTree, key: []const u8, value: T) void {
+        pub fn set(self: *ARTree, key: []const u8, value: T) ?T {
             var search = key;
             var node = self.root;
             var parent: ?*Node = null;
             var prev_search: ?u8 = null;
+            var response: ?T = null;
 
             while (search.len != 0) {
                 const eq = node.check_prefix(search);
@@ -620,16 +623,17 @@ pub fn Tree(comptime T: type) type {
 
                     // replace node in parent
                     parent.?.set(prev_search.?, new_node);
-                    return;
+                    return null;
                 }
                 search = search[eq..];
                 if (search.len == 0) {
                     // create or update leaf TODO implement logic for lazy expansion of leaf
                     if (node.leaf) |leaf| {
+                        response = leaf.value;
                         self.allocator.destroy(leaf);
                     }
                     node.leaf = Leaf.new(self.allocator, value);
-                    return;
+                    return response;
                 }
 
                 if (node.get(search[0])) |n| {
@@ -643,16 +647,19 @@ pub fn Tree(comptime T: type) type {
                     }
                     const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
                     node.append(search[0], new_node_leaf);
-                    return;
+                    return null;
                 }
             }
+            // create or update leaf TODO implement logic for lazy expansion of leaf
             if (node.leaf) |leaf| {
+                response = leaf.value;
                 self.allocator.destroy(leaf);
             }
             node.leaf = Leaf.new(self.allocator, value);
+            return response;
         }
 
-        pub fn delete(self: *ARTree, key: []const u8) bool {
+        pub fn delete(self: *ARTree, key: []const u8) ?T {
             var search = key;
             var node = self.root;
             var parent: ?*Node = null;
@@ -661,14 +668,14 @@ pub fn Tree(comptime T: type) type {
             while (search.len != 0) {
                 if (node.leaf) |leaf| {
                     if (leaf.eql(search)) {
-                        node.remove_leaf();
+                        const v = node.remove_leaf();
                         parent.?.merge_if_possible();
-                        return true;
+                        return v;
                     }
                 }
                 const eq = node.check_prefix(search);
                 if (eq != node.prefix_len()) {
-                    return false;
+                    return null;
                 }
                 search = search[eq..];
                 if (search.len == 0) {
@@ -680,17 +687,17 @@ pub fn Tree(comptime T: type) type {
                     node = n;
                     search = search[1..];
                 } else {
-                    return false;
+                    return null;
                 }
             }
             if (node.leaf) |leaf| {
                 if (leaf.eql(search)) {
-                    node.remove_leaf();
+                    const v = node.remove_leaf();
                     parent.?.merge_if_possible();
-                    return true;
+                    return v;
                 }
             }
-            return false;
+            return null;
         }
 
         pub const Entry = struct {
@@ -739,9 +746,9 @@ test "basic" {
     {
         var ts = Tree([]const u8).init(tal);
         defer ts.deinit();
-        ts.set("key1", "value1");
-        ts.set("key2", "value2");
-        ts.set("key11", "value3");
+        _ = ts.set("key1", "value1");
+        _ = ts.set("key2", "value2");
+        _ = ts.set("key11", "value3");
 
         // const Tprint = struct {
         //     fn f(node: *const Tree([]const u8).Node, label: ?u8, _: void) void {
@@ -770,8 +777,8 @@ test "basic" {
         try std.testing.expectEqualSlices(u8, rs2, "value2");
         try std.testing.expectEqualSlices(u8, rs3, "value3");
 
-        try std.testing.expect(ts.delete("key11"));
-        try std.testing.expect(ts.delete("key2"));
+        try std.testing.expect(ts.delete("key11") != null);
+        try std.testing.expect(ts.delete("key2") != null);
 
         try std.testing.expectEqual(null, ts.get("key11"));
         try std.testing.expectEqual(null, ts.get("key2"));
@@ -780,9 +787,9 @@ test "basic" {
     {
         var ts = Tree(usize).init(tal);
         defer ts.deinit();
-        ts.set("key1", 1);
-        ts.set("key2", 2);
-        ts.set("key3", 3);
+        _ = ts.set("key1", 1);
+        _ = ts.set("key2", 2);
+        _ = ts.set("key3", 3);
 
         const rs1 = ts.get("key1") orelse return error.NotFound;
         const rs2 = ts.get("key2") orelse return error.NotFound;
@@ -803,7 +810,8 @@ test "basic" {
             "123\x003",
         };
         for (words, 0..) |w, i| {
-            t.set(w, valAsType(T, i));
+            const v = t.set(w, valAsType(T, i));
+            try std.testing.expect(v == null);
         }
 
         const r0 = t.get("Aaronic");
@@ -821,7 +829,7 @@ test "basic" {
 
 const doInsert = struct {
     fn func(line: [:0]const u8, linei: usize, container: anytype, _: anytype, comptime T: type) anyerror!void {
-        container.set(line, valAsType(T, linei));
+        _ = container.set(line, valAsType(T, linei));
         // try std.testing.expect(result == .missing);
     }
 }.func;
