@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const mod = b.addModule("zart", .{
+        .root_source_file = "src/zart.zig",
         .optimize = optimize,
         .target = target,
     });
