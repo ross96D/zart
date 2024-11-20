@@ -46,7 +46,7 @@ pub fn Tree(comptime T: type) type {
             leaf: ?*Leaf = null,
             node: union(enum) {
                 node4: Node4,
-                node16: Node16,
+                node16: *Node16,
                 node48: *Node48,
                 node256: *Node256,
             },
@@ -160,7 +160,8 @@ pub fn Tree(comptime T: type) type {
                     .node4 => |v| {
                         assert(v.childs == 4);
 
-                        var new_node = Node16{};
+                        var new_node = allocator.create(Node16) catch unreachable;
+                        new_node.* = Node16{};
                         @memcpy(new_node.ptrs[0..4], v.ptrs[0..]);
                         @memcpy(new_node.keys[0..4], v.keys[0..]);
                         new_node.childs = 4;
@@ -176,6 +177,7 @@ pub fn Tree(comptime T: type) type {
                             new_node.idxs[key] = @intCast(i);
                         }
                         new_node.childs = 16;
+                        allocator.destroy(v);
                         self.node = .{ .node48 = new_node };
                     },
                     .node48 => |v| {
@@ -494,9 +496,11 @@ pub fn Tree(comptime T: type) type {
                 n.append('7', c);
                 n.append('8', c);
                 n.append('9', c);
+                const node16 = try std.testing.allocator.create(Z.Node16);
+                node16.* = n;
 
                 var node = Z.Node{
-                    .node = .{ .node16 = n },
+                    .node = .{ .node16 = node16 },
                 };
 
                 const keylist = [16]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
