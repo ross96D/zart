@@ -104,15 +104,6 @@ pub fn Tree(comptime T: type) type {
                     try std.testing.expect(child.leaf != null);
                     try std.testing.expectEqual(child.leaf.?.value, 1);
 
-                    std.debug.print("\noriginal: {s}\n{s}:{d} - {c} - {s}:{d}\n", .{
-                        key,
-                        n.partial.slice(),
-                        n.partial.slice().len,
-                        n.node.node4.keys[0],
-                        child.partial.slice(),
-                        child.partial.slice().len,
-                    });
-
                     try std.testing.expectEqualDeep(child.partial.slice(), &(base ** 3));
                     try std.testing.expectEqualDeep(n.partial.slice(), base[0..4]);
                     try std.testing.expectEqual(n.node.node4.keys[0], 'e');
