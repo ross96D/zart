@@ -45,7 +45,7 @@ pub fn Tree(comptime T: type) type {
             partial: Partial = Partial{},
             leaf: ?*Leaf = null,
             node: union(enum) {
-                node4: Node4,
+                node3: Node3,
                 node16: *Node16,
                 node48: *Node48,
                 node256: *Node256,
@@ -55,7 +55,7 @@ pub fn Tree(comptime T: type) type {
             fn new(allocator: mem.Allocator) *Node {
                 const new_node = allocator.create(Node) catch unreachable;
                 new_node.* = Node{
-                    .node = .{ .node4 = Node4{} },
+                    .node = .{ .node3 = Node3{} },
                 };
                 return new_node;
             }
@@ -64,7 +64,7 @@ pub fn Tree(comptime T: type) type {
                 var prefix = _prefix;
                 var new_node = allocator.create(Node) catch unreachable;
                 new_node.* = Node{
-                    .node = .{ .node4 = Node4{} },
+                    .node = .{ .node3 = Node3{} },
                     .leaf = Leaf.new(allocator, value),
                 };
                 while (prefix.len > 0) {
@@ -75,7 +75,7 @@ pub fn Tree(comptime T: type) type {
                         prefix = prefix[0..start];
 
                         const node = allocator.create(Node) catch unreachable;
-                        node.* = Node{ .node = .{ .node4 = Node4{} } };
+                        node.* = Node{ .node = .{ .node3 = Node3{} } };
                         node.append(prefix[prefix.len - 1], new_node);
                         prefix = prefix[0 .. prefix.len - 1];
                         new_node = node;
@@ -100,19 +100,19 @@ pub fn Tree(comptime T: type) type {
                     const n = Tree(usize).Node.new_leaf(tal, key, 1);
                     defer n.deinit(tal);
                     try std.testing.expect(n.leaf == null);
-                    const child = n.node.node4.ptrs[0].?;
+                    const child = n.node.node3.ptrs[0].?;
                     try std.testing.expect(child.leaf != null);
                     try std.testing.expectEqual(child.leaf.?.value, 1);
 
                     try std.testing.expectEqualDeep(child.partial.slice(), &(base ** 3));
                     try std.testing.expectEqualDeep(n.partial.slice(), base[0..4]);
-                    try std.testing.expectEqual(n.node.node4.keys[0], 'e');
+                    try std.testing.expectEqual(n.node.node3.keys[0], 'e');
                 }
             }
 
             fn deinit(self: *Node, allocator: mem.Allocator) void {
                 switch (self.node) {
-                    .node4 => self.node.node4.deinit(allocator),
+                    .node3 => self.node.node3.deinit(allocator),
                     .node16 => self.node.node16.deinit(allocator),
                     .node48 => self.node.node48.deinit(allocator),
                     .node256 => self.node.node256.deinit(allocator),
@@ -138,7 +138,7 @@ pub fn Tree(comptime T: type) type {
             /// you should check if the node should be promoted before calling this function
             fn append(self: *Node, label: u8, child: *Node) void {
                 switch (self.node) {
-                    .node4 => self.node.node4.append(label, child),
+                    .node3 => self.node.node3.append(label, child),
                     .node16 => self.node.node16.append(label, child),
                     .node48 => self.node.node48.append(label, child),
                     .node256 => self.node.node256.append(label, child),
@@ -148,14 +148,14 @@ pub fn Tree(comptime T: type) type {
             /// only promote when the node is full
             fn promote(self: *Node, allocator: mem.Allocator) void {
                 switch (self.node) {
-                    .node4 => |v| {
-                        assert(v.childs == 4);
+                    .node3 => |v| {
+                        assert(v.childs == Node3.NUM);
 
                         var new_node = allocator.create(Node16) catch unreachable;
                         new_node.* = Node16{};
-                        @memcpy(new_node.ptrs[0..4], v.ptrs[0..]);
-                        @memcpy(new_node.keys[0..4], v.keys[0..]);
-                        new_node.childs = 4;
+                        @memcpy(new_node.ptrs[0..Node3.NUM], v.ptrs[0..]);
+                        @memcpy(new_node.keys[0..Node3.NUM], v.keys[0..]);
+                        new_node.childs = Node3.NUM;
                         self.node = .{ .node16 = new_node };
                     },
                     .node16 => |v| {
@@ -214,14 +214,14 @@ pub fn Tree(comptime T: type) type {
                     entries[i].node = Z.Node.new_leaf(tal, "", rand.int(usize));
                 }
                 for (entries, 0..) |e, i| {
-                    if (i == 4 or i == 16 or i == 48) {
-                        assert(node.is_full());
+                    if (i == Node3.NUM or i == 16 or i == 48) {
+                        fassert(node.is_full(), "{d} {d}", .{ i, node.childs() });
                     }
                     if (node.is_full()) {
-                        assert(i == 4 or i == 16 or i == 48);
+                        assert(i == Node3.NUM or i == 16 or i == 48);
                         switch (i) {
-                            4 => {
-                                assert(node.node == .node4);
+                            Node3.NUM => {
+                                assert(node.node == .node3);
                                 assert(node.get(e.key) == null);
                                 node.promote(tal);
                                 assert(node.get(e.key) == null);
@@ -311,7 +311,7 @@ pub fn Tree(comptime T: type) type {
 
             fn set(self: *Node, label: u8, child: *Node) void {
                 return switch (self.node) {
-                    .node4 => self.node.node4.set(label, child),
+                    .node3 => self.node.node3.set(label, child),
                     .node16 => self.node.node16.set(label, child),
                     .node48 => self.node.node48.set(label, child),
                     .node256 => self.node.node256.set(label, child),
@@ -337,7 +337,7 @@ pub fn Tree(comptime T: type) type {
                 if (self.leaf != null) {
                     return;
                 }
-                const child = self.node.node4.ptrs[0].?;
+                const child = self.node.node3.ptrs[0].?;
                 // sum of the child label, the child prefix and the current prefix must not be less
                 // than `Partial.PARTIAL_SIZE`
                 if (child.prefix_len() + 1 + self.prefix_len() > Partial.PARTIAL_SIZE) {
@@ -348,10 +348,10 @@ pub fn Tree(comptime T: type) type {
 
             fn merge(self: *Node, allocator: mem.Allocator) void {
                 assert(self.childs() == 1);
-                assert(self.node == .node4);
+                assert(self.node == .node3);
 
-                const child = self.node.node4.ptrs[0].?;
-                const label = self.node.node4.keys[0];
+                const child = self.node.node3.ptrs[0].?;
+                const label = self.node.node3.keys[0];
                 assert(child.leaf == null or (child.leaf != null and self.leaf == null));
                 assert((self.partial.length + 1 + child.partial.length) <= Partial.PARTIAL_SIZE);
 
@@ -377,25 +377,26 @@ pub fn Tree(comptime T: type) type {
                 return v;
             }
         };
-        const Node4 = struct {
+        const Node3 = struct {
+            const NUM = 3;
             /// key and ptr have matching positions
-            keys: [4]u8 = undefined,
-            ptrs: [4]?*Node = [1]?*Node{null} ** 4,
+            keys: [NUM]u8 = undefined,
+            ptrs: [NUM]?*Node = [1]?*Node{null} ** NUM,
             childs: u8 = 0,
 
-            fn deinit(self: *Node4, allocator: mem.Allocator) void {
+            fn deinit(self: *Node3, allocator: mem.Allocator) void {
                 for (0..self.childs) |i| {
                     self.ptrs[i].?.deinit(allocator);
                 }
             }
 
-            fn for_each(self: *const Node4, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node3, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
                     self.ptrs[i].?.for_each(self.keys[i], level, ctx, fun);
                 }
             }
 
-            fn get(self: *const Node4, label: u8) ?*Node {
+            fn get(self: *const Node3, label: u8) ?*Node {
                 for (0..self.childs) |i| {
                     if (label == self.keys[i]) {
                         return self.ptrs[i];
@@ -404,7 +405,7 @@ pub fn Tree(comptime T: type) type {
                 return null;
             }
 
-            fn set(self: *Node4, label: u8, child: *Node) void {
+            fn set(self: *Node3, label: u8, child: *Node) void {
                 assert(self.get(label) != null);
 
                 for (0..self.childs) |i| {
@@ -416,8 +417,8 @@ pub fn Tree(comptime T: type) type {
                 unreachable;
             }
 
-            fn append(self: *Node4, label: u8, child: *Node) void {
-                assert(self.childs < 4);
+            fn append(self: *Node3, label: u8, child: *Node) void {
+                assert(self.childs < NUM);
                 assert(self.get(label) == null);
 
                 self.keys[self.childs] = label;
@@ -425,8 +426,8 @@ pub fn Tree(comptime T: type) type {
                 self.childs += 1;
             }
 
-            fn is_full(self: *const Node4) bool {
-                return self.childs == 4;
+            fn is_full(self: *const Node3) bool {
+                return self.childs == NUM;
             }
         };
         const Node16 = struct {
