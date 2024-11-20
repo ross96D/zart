@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const art = @import("zart.zig");
 const Art = art.Tree;
 const art_test = art;
@@ -58,6 +59,16 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
     var timer = try std.time.Timer.start();
     _ = try art_test.eachLineDo(doInsert_, lines, container, null, usize);
     const t1 = timer.read();
+
+    {
+        const f = try std.fs.openFileAbsolute("/proc/self/status", .{});
+        const data = try f.readToEndAlloc(a, 1 << 31);
+        if (@TypeOf(container) == *Art(usize)) {
+            std.debug.print("\nArt memory\n{s}\n\n", .{parseStatus(data)});
+        } else {
+            std.debug.print("\nStringHashMap memory\n{s}\n\n", .{parseStatus(data)});
+        }
+    }
 
     const doSearch = struct {
         fn func(line: [:0]const u8, linei: usize, _container: anytype, _: anytype, comptime U: type) anyerror!void {
@@ -128,11 +139,9 @@ pub fn main() !void {
     {
         var debug_alloc = std.testing.FailingAllocator.init(allocator, .{});
 
-        // var arena = std.heap.ArenaAllocator.init(debug_alloc.allocator());
-        // defer arena.deinit();
-        // const aa = arena.allocator();
         const Map = std.StringHashMap(usize);
         var map = Map.init(debug_alloc.allocator());
+        defer map.deinit();
         std.debug.print("\nStringHashMap\n", .{});
         try bench(allocator, &map, Map.put, Map.get, Map.remove);
 
@@ -142,9 +151,6 @@ pub fn main() !void {
     {
         var debug_alloc = std.testing.FailingAllocator.init(allocator, .{});
 
-        // var arena = std.heap.ArenaAllocator.init(debug_alloc.allocator());
-        // defer arena.deinit();
-        // const aa = arena.allocator();
         const T = Art(usize);
         var t = T.init(debug_alloc.allocator());
         defer t.deinit();
@@ -152,12 +158,50 @@ pub fn main() !void {
 
         try bench(allocator, &t, T.set, T.get, T.delete);
 
-        std.debug.print(
-            "\nArt allocator stats {s}\n NODE {d}",
-            .{
-                debug_allocator_stats(debug_alloc),
-                @sizeOf(Art(usize).Node),
-            },
-        );
+        std.debug.print("\nArt allocator stats {s}\n", .{debug_allocator_stats(debug_alloc)});
     }
+}
+
+fn parseStatus(data: []const u8) []const u8 {
+    const ParseState = enum { Empty, FoundStart, FoundEnd };
+
+    var lineBegin = true;
+    var state: ParseState = .Empty;
+    var start: usize = 0;
+    var end: usize = 0;
+    for (data, 0..) |c, i| {
+        switch (state) {
+            .Empty => {
+                if (lineBegin) {
+                    if (std.mem.eql(u8, data[i .. i + 6], "VmData")) {
+                        start = i;
+                        state = .FoundStart;
+                    }
+                    lineBegin = false;
+                }
+                if (c == '\n') {
+                    lineBegin = true;
+                }
+            },
+            .FoundStart => {
+                if (lineBegin) {
+                    if (std.mem.eql(u8, data[i .. i + 6], "VmSwap")) {
+                        state = .FoundEnd;
+                    }
+                    lineBegin = false;
+                }
+                if (c == '\n') {
+                    lineBegin = true;
+                }
+            },
+            .FoundEnd => {
+                if (c == '\n') {
+                    std.debug.assert(end == 0);
+                    end = i;
+                    return data[start..end];
+                }
+            },
+        }
+    }
+    unreachable;
 }
