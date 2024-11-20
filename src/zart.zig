@@ -16,15 +16,15 @@ pub fn Tree(comptime T: type) type {
     return struct {
         const ARTree = @This();
 
-        const Node = struct {
+        pub const Node = struct {
             /// A growable list of bytes to be used on path compression (Pesimistic approach)
             partial: std.ArrayList(u8),
             leaf: ?*Leaf = null,
             node: union(enum) {
                 node4: Node4,
                 node16: Node16,
-                node48: Node48,
-                node256: Node256,
+                node48: *Node48,
+                node256: *Node256,
             },
 
             /// creates an empty and ready to use node
@@ -64,6 +64,11 @@ pub fn Tree(comptime T: type) type {
                 if (self.leaf != null and _leaf) {
                     self.partial.allocator.destroy(self.leaf.?);
                 }
+                switch (self.node) {
+                    .node48 => |v| self.partial.allocator.destroy(v),
+                    .node256 => |v| self.partial.allocator.destroy(v),
+                    else => {},
+                }
                 self.partial.allocator.destroy(self);
             }
 
@@ -93,8 +98,8 @@ pub fn Tree(comptime T: type) type {
                     },
                     .node16 => |v| {
                         assert(v.childs == 16);
-
-                        var new_node = Node48{};
+                        var new_node = self.partial.allocator.create(Node48) catch unreachable;
+                        new_node.* = Node48{};
                         @memcpy(new_node.ptrs[0..16], v.ptrs[0..]);
                         // stores indexes of new_node.ptrs on the new_node.keys
                         for (v.keys, 0..) |key, i| {
@@ -105,8 +110,8 @@ pub fn Tree(comptime T: type) type {
                     },
                     .node48 => |v| {
                         assert(v.childs == 48);
-
-                        var new_node = Node256{};
+                        var new_node = self.partial.allocator.create(Node256) catch unreachable;
+                        new_node.* = Node256{};
                         var count: usize = 0;
                         for (v.idxs, 0..) |idx, i| {
                             if (i == 48) {
@@ -119,6 +124,7 @@ pub fn Tree(comptime T: type) type {
                         }
                         assert(count == 48);
                         new_node.childs = 48;
+                        self.partial.allocator.destroy(v);
                         self.node = .{ .node256 = new_node };
                     },
                     .node256 => unreachable,
@@ -198,18 +204,18 @@ pub fn Tree(comptime T: type) type {
 
             /// move the data in the prexif n positions so if we move `some_data` 4 positions
             /// would result in `_data`
-            fn move_prefix_backwards(self: *Node, n: usize) void {
+            fn move_prefix_forwards(self: *Node, n: usize) void {
                 const new_length = self.partial.items.len - n;
                 mem.copyForwards(u8, self.partial.items[0..new_length], self.partial.items[n..]);
                 self.partial.items.len = new_length;
             }
 
-            test move_prefix_backwards {
+            test move_prefix_forwards {
                 var node = Node.new(std.testing.allocator);
                 defer node.destroy(true);
 
                 try node.partial.appendSlice("some_data");
-                node.move_prefix_backwards(4);
+                node.move_prefix_forwards(4);
                 try std.testing.expectEqualSlices(u8, "_data", node.partial.items);
             }
 
@@ -228,10 +234,10 @@ pub fn Tree(comptime T: type) type {
                 };
             }
 
-            fn for_each(self: *const Node, label: ?u8, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
-                fun(self, label, ctx);
+            fn for_each(self: *const Node, label: ?u8, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+                fun(self, label, level, ctx);
                 switch (self.node) {
-                    inline else => |v| v.for_each(ctx, fun),
+                    inline else => |v| v.for_each(level + 1, ctx, fun),
                 }
             }
 
@@ -308,9 +314,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node4, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node4, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.keys[i], ctx, fun);
+                    self.ptrs[i].?.for_each(self.keys[i], level, ctx, fun);
                 }
             }
 
@@ -360,9 +366,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node16, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node16, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.keys[i], ctx, fun);
+                    self.ptrs[i].?.for_each(self.keys[i], level, ctx, fun);
                 }
             }
 
@@ -421,6 +427,7 @@ pub fn Tree(comptime T: type) type {
                 for (keylist) |k| {
                     try std.testing.expect(node.get(k) != null);
                 }
+                std.testing.allocator.destroy(node.node.node48);
             }
 
             fn set(self: *Node16, label: u8, child: *Node) void {
@@ -457,10 +464,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node48, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node48, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
                     const label = std.mem.indexOf(u8, &self.idxs, &[_]u8{@intCast(i)});
-                    self.ptrs[i].?.for_each(@intCast(label.?), ctx, fun);
+                    self.ptrs[i].?.for_each(@intCast(label.?), level, ctx, fun);
                 }
             }
 
@@ -502,10 +509,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node256, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node256, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (self.idxs, 0..) |node, i| {
                     if (node) |n| {
-                        n.for_each(@intCast(i), ctx, fun);
+                        n.for_each(@intCast(i), level, ctx, fun);
                     }
                 }
             }
@@ -555,7 +562,9 @@ pub fn Tree(comptime T: type) type {
 
         pub fn init(allocator: mem.Allocator) ARTree {
             var root = Node.new(allocator);
-            root.node = .{ .node256 = Node256{} };
+            const node256 = allocator.create(Node256) catch unreachable;
+            node256.* = Node256{};
+            root.node = .{ .node256 = node256 };
             return ARTree{
                 .allocator = allocator,
                 .root = root,
@@ -616,7 +625,7 @@ pub fn Tree(comptime T: type) type {
 
                     var new_node = Node.new(self.allocator);
                     new_node.set_prefix(search[0..eq]);
-                    node.move_prefix_backwards(eq + 1);
+                    node.move_prefix_forwards(eq + 1);
 
                     new_node.append(label_leaf, new_node_leaf);
                     new_node.append(node_leaf, node);
@@ -630,9 +639,10 @@ pub fn Tree(comptime T: type) type {
                     // create or update leaf TODO implement logic for lazy expansion of leaf
                     if (node.leaf) |leaf| {
                         response = leaf.value;
-                        self.allocator.destroy(leaf);
+                        leaf.value = value;
+                    } else {
+                        node.leaf = Leaf.new(self.allocator, value);
                     }
-                    node.leaf = Leaf.new(self.allocator, value);
                     return response;
                 }
 
@@ -653,9 +663,10 @@ pub fn Tree(comptime T: type) type {
             // create or update leaf TODO implement logic for lazy expansion of leaf
             if (node.leaf) |leaf| {
                 response = leaf.value;
-                self.allocator.destroy(leaf);
+                leaf.value = value;
+            } else {
+                node.leaf = Leaf.new(self.allocator, value);
             }
-            node.leaf = Leaf.new(self.allocator, value);
             return response;
         }
 
@@ -706,11 +717,11 @@ pub fn Tree(comptime T: type) type {
         };
 
         pub fn YieldFN(CtxT: type) type {
-            return fn (node: *const Node, label: ?u8, context: CtxT) void;
+            return fn (node: *const Node, label: ?u8, level: usize, context: CtxT) void;
         }
 
         pub fn for_each(self: *const ARTree, context: anytype, fun: YieldFN(@TypeOf(context))) void {
-            self.root.for_each(null, context, fun);
+            self.root.for_each(null, 0, context, fun);
         }
     };
 }
