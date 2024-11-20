@@ -3,6 +3,7 @@
 This repository is an implementation of the adaptive radix tree described on [The adaptive radix tree: ARTful indexing for main-memory databases](https://ieeexplore.ieee.org/document/6544812). 
 
 # TODO
+- [ ] Add fuzzy test
 - [ ] Implement a memory pool strategy for fast node allocation/deallocation. Make it configurable at build time.
 - [ ] Node size is to large (64 bytes), Node3 take a 32 bytes, have an almost always null pointer to Leaf. Partial is 16 bytes, ideally Node size should be 24 bytes. This reduce memory consumption and may improve speed as more nodes can fit on the cache layer.
 
