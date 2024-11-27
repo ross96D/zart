@@ -1,3 +1,12 @@
+// TODO we could get nasty with the leaf, the current implementation allocates a new leaf, but..
+// TODO instead of allocating a new leaf we could allocate the node+leaf space and on the node is just a bit flag
+
+// TODO when the node have a partial value also always have 1 child. This special case should be take into consideration
+
+// This todo is after the first ones, because is tricky and we may not get performance improvement
+// TODO just treat all node on the union as ptrs. the trick is that node3 and partial (node1)
+// TODO will be next to the right. This would affect the leaf allocation too.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
@@ -981,4 +990,19 @@ pub fn eachLineDo(
         linei += 1;
     }
     return linei - 1;
+}
+
+test "size" {
+    const s = union(enum) {
+        node3: Tree(i32).Node3,
+        node16: *Tree(i32).Node16,
+        node48: *Tree(i32).Node48,
+        node256: *Tree(i32).Node256,
+    };
+
+    std.debug.print("node3 size {d} {d}\n", .{ @sizeOf(Tree(i32).Node3), @sizeOf(?*Tree(i32).Node3) });
+    std.debug.print("node size {d}\n", .{@sizeOf(Tree(i32).Node)});
+    std.debug.print("partial size {d}\n", .{@sizeOf(Tree(i32).Node.Partial)});
+    std.debug.print("node union {d}\n", .{@sizeOf(s)});
+    std.testing.refAllDecls(Tree(usize).Node3);
 }
