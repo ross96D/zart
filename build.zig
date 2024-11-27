@@ -28,6 +28,9 @@ pub fn build(b: *std.Build) void {
     // running `zig build`).
     b.installArtifact(lib);
 
+    // add check compile step
+    check(b, b.step("check", "fast check compile"), .{ .target = target, .optimize = optimize });
+
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const test_filters = b.option([]const []const u8, "test-filter", "Only run test that match the filter");
@@ -60,4 +63,21 @@ pub fn build(b: *std.Build) void {
     const bench_run = b.addRunArtifact(bench);
     const bench_step = b.step("bench", "Bench against std.StringHashMap()");
     bench_step.dependOn(&bench_run.step);
+}
+
+/// fast compile check for easy development
+fn check(
+    b: *std.Build,
+    step_check: *std.Build.Step,
+    opts: struct {
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+    },
+) void {
+    const lib = b.addTest(.{
+        .root_source_file = b.path("src/zart.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+    step_check.dependOn(&lib.step);
 }
