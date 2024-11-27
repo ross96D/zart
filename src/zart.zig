@@ -7,6 +7,9 @@
 // TODO just treat all node on the union as ptrs. the trick is that node3 and partial (node1)
 // TODO will be next to the right. This would affect the leaf allocation too.
 
+// TODO i am not demoting the nodes when a delete happens. This can crash the program under certain conditions
+// TODO make a test to check this
+
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
