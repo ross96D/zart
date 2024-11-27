@@ -30,12 +30,16 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
+    const test_filters = b.option([]const []const u8, "test-filter", "Only run test that match the filter");
     const lib_unit_tests = b.addTest(.{
         .name = "test",
         .root_source_file = b.path("src/zart.zig"),
         .target = target,
         .optimize = optimize,
     });
+    if (test_filters) |filters| {
+        lib_unit_tests.filters = filters;
+    }
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
     b.installArtifact(lib_unit_tests);
