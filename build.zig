@@ -64,6 +64,9 @@ pub fn build(b: *std.Build) void {
     const bench_run = b.addRunArtifact(bench);
     const bench_step = b.step("bench", "Bench against std.StringHashMap()");
     bench_step.dependOn(&bench_run.step);
+
+    const bench_build_step = b.step("bench:build", "Bench against std.StringHashMap()");
+    bench_build_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
 }
 
 /// fast compile check for easy development
