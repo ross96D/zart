@@ -138,6 +138,7 @@ pub fn Tree(comptime T: type) type {
                     allocator.destroy(self.leaf.?);
                 }
                 switch (self.node) {
+                    .node16 => |v| allocator.destroy(v),
                     .node48 => |v| allocator.destroy(v),
                     .node256 => |v| allocator.destroy(v),
                     else => {},
@@ -943,17 +944,26 @@ const doInsert = struct {
     }
 }.func;
 
-// test "insert many keys" {
-//     var lines = try readFileLines(tal, "./testdata/words.txt");
-//     defer deinitLines(tal, &lines);
-//     inline for (ValueTypes) |T| {
-//         var t = Tree(T).init(tal);
-//         defer t.deinit();
-//         const _lines = try eachLineDo(doInsert, lines, &t, null, T);
-//         _ = _lines;
-//         // try std.testing.expectEqual(t.size, _lines);
-//     }
-// }
+const doSearch = struct {
+    fn func(line: [:0]const u8, linei: usize, container: anytype, _: anytype, comptime T: type) anyerror!void {
+        const v = container.get(line);
+        try std.testing.expectEqual(v, valAsType(T, linei));
+        // try std.testing.expect(result == .missing);
+    }
+}.func;
+
+test "insert many keys" {
+    var lines = try readFileLines(tal, "./testdata/words.txt");
+    defer deinitLines(tal, &lines);
+    inline for (ValueTypes) |T| {
+        var t = Tree(T).init(tal);
+        defer t.deinit();
+        const _lines = try eachLineDo(doInsert, lines, &t, null, T);
+        _ = _lines;
+        _ = try eachLineDo(doSearch, lines, &t, null, T);
+        // try std.testing.expectEqual(t.size, _lines);
+    }
+}
 
 pub fn readFileLines(allocator: mem.Allocator, filename: []const u8) !std.ArrayList([:0]const u8) {
     var lines = std.ArrayList([:0]const u8).init(allocator);
