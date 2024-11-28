@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
     const lib_unit_tests = b.addTest(.{
         .name = "test",
         .root_source_file = b.path("src/zart.zig"),
+        .test_runner = b.path("test_runner.zig"),
         .target = target,
         .optimize = optimize,
     });
