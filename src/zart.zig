@@ -35,10 +35,43 @@ pub fn Tree(comptime T: type) type {
                 items: [PARTIAL_SIZE]u8 = undefined,
                 length: u8 = 0,
 
-                pub fn append(self: *Partial, item: u8) void {
-                    assert(self.length < Partial.PARTIAL_SIZE);
-                    self.items[self.length] = item;
-                    self.length += 1;
+                node1: Node1 = Node1{},
+                const Node1 = struct {
+                    label: u8 = 0,
+                    ptr: ?*Node = null,
+                    pub fn set(self: *Node1, label: u8, child: *Node) void {
+                        self.label = label;
+                        self.ptr = child;
+                    }
+                };
+
+                pub fn deinit(self: Partial, allocator: mem.Allocator) void {
+                    if (self.node1.ptr) |node| {
+                        node.deinit(allocator);
+                    }
+                }
+
+                fn for_each(self: *const Partial, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+                    if (self.node1.ptr) |node| {
+                        node.for_each(self.node1.label, level, ctx, fun);
+                    }
+                }
+
+                pub fn get(self: Partial, label: u8) ?*Node {
+                    if (self.node1.label == label) {
+                        return self.node1.ptr;
+                    }
+                    return null;
+                }
+
+                pub inline fn is_full(self: Partial) bool {
+                    return self.node1.ptr != null;
+                }
+
+                pub fn append(self: *Partial, label: u8, child: *Node) void {
+                    assert(self.node1.label == 0);
+                    self.node1.ptr = child;
+                    self.node1.label = label;
                 }
 
                 pub fn appendSlice(self: *Partial, items: []const u8) void {
@@ -52,11 +85,56 @@ pub fn Tree(comptime T: type) type {
                 pub inline fn slice(self: Partial) []const u8 {
                     return self.items[0..self.length];
                 }
+
+                /// compares the compressed path of a node with the current key and returns the number of equal bytes
+                fn check_prefix(self: Partial, key: []const u8) u8 {
+                    var count: u8 = 0;
+                    const len = @min(self.length, key.len);
+                    for (0..len) |i| {
+                        if (self.items[i] != key[i]) {
+                            break;
+                        }
+                        count += 1;
+                    }
+                    fassert(count <= len, "count {d} len {d}", .{ count, len });
+                    return count;
+                }
+
+                /// move the data in the prexif n positions so if we move `some_data` 4 positions
+                /// would result in `_data`
+                fn move_prefix_forwards(self: *Partial, n: u8) void {
+                    assert(n <= self.length);
+                    const new_length = self.length - n;
+                    mem.copyForwards(u8, self.items[0..new_length], self.items[n..self.length]);
+                    self.length = new_length;
+                }
+
+                test move_prefix_forwards {
+                    var partial = Partial{};
+
+                    partial.appendSlice("some_data");
+                    partial.move_prefix_forwards(4);
+                    try std.testing.expectEqualSlices(u8, "_data", partial.slice());
+                }
+
+                fn prefix_len(self: *const Partial) u8 {
+                    return self.length;
+                }
+
+                fn set_prefix(self: *Partial, prefix: []const u8) void {
+                    assert(prefix.len <= Partial.PARTIAL_SIZE);
+
+                    @memcpy(self.items[0..prefix.len], prefix);
+                    self.length = @intCast(prefix.len);
+                    assert(std.mem.eql(u8, self.slice(), self.items[0..self.length]));
+                    assert(std.mem.eql(u8, self.slice(), prefix));
+                }
             };
 
-            partial: Partial = Partial{},
+            // partial: Partial = Partial{},
             leaf: ?*Leaf = null,
             node: union(enum) {
+                partial: Partial,
                 node3: Node3,
                 node16: *Node16,
                 node48: *Node48,
@@ -64,66 +142,65 @@ pub fn Tree(comptime T: type) type {
             },
 
             /// creates an empty and ready to use node
-            fn new(allocator: mem.Allocator) *Node {
+            fn new(allocator: mem.Allocator, t: type) *Node {
                 const new_node = allocator.create(Node) catch unreachable;
                 new_node.* = Node{
-                    .node = .{ .node3 = Node3{} },
+                    .node = switch (t) {
+                        Node3 => .{ .node3 = Node3{} },
+                        Partial => .{ .partial = Partial{} },
+                        else => {
+                            @compileError("expected type " ++
+                                @typeName(ARTree.Node3) ++ " or " ++
+                                @typeName(ARTree.Node.Partial) ++
+                                ", got " ++ @typeName(t));
+                        },
+                    },
                 };
                 return new_node;
             }
             /// creates a leaf node with all the necessary intermediate nodes for prefix to fit
+            ///
+            /// the prefix param is the path to get to the leaf. This is used for path compression.
+            ///
+            /// parent--[label]-->node_with_compressed_path-->leaf
+            ///
+            /// node_with_compressed_path can consist of several nodes because the max size of
+            /// a single compressed path is `Partial.PARTIAL_SIZE`
             fn new_leaf(allocator: mem.Allocator, _prefix: []const u8, value: T) *Node {
                 var prefix = _prefix;
                 var new_node = allocator.create(Node) catch unreachable;
                 new_node.* = Node{
-                    .node = .{ .node3 = Node3{} },
+                    .node = .{ .partial = Partial{} },
                     .leaf = Leaf.new(allocator, value),
                 };
                 while (prefix.len > 0) {
+                    // if the prefix is larger than what partial can contain
+                    // than we create a partial with the maximum that can contains
                     if (prefix.len > Partial.PARTIAL_SIZE) {
                         const start = prefix.len - Partial.PARTIAL_SIZE;
                         const end = prefix.len;
-                        new_node.set_prefix(prefix[start..end]);
+
+                        new_node.node.partial.set_prefix(prefix[start..end]);
                         prefix = prefix[0..start];
 
                         const node = allocator.create(Node) catch unreachable;
-                        node.* = Node{ .node = .{ .node3 = Node3{} } };
+                        node.* = Node{ .node = .{ .partial = Partial{} } };
                         node.append(prefix[prefix.len - 1], new_node);
+
                         prefix = prefix[0 .. prefix.len - 1];
+
                         new_node = node;
                     } else {
-                        new_node.set_prefix(prefix);
+                        new_node.node.partial.set_prefix(prefix);
                         prefix.len = 0;
                     }
                 }
                 return new_node;
             }
 
-            test new_leaf {
-                {
-                    const n = Tree(usize).Node.new_leaf(tal, "key", 1);
-                    defer n.deinit(tal);
-                    try std.testing.expect(n.leaf != null);
-                    try std.testing.expectEqual(n.leaf.?.value, 1);
-                }
-                {
-                    const base = [5]u8{ 'l', 'a', 'r', 'g', 'e' };
-                    const key: []const u8 = &(base ** 4);
-                    const n = Tree(usize).Node.new_leaf(tal, key, 1);
-                    defer n.deinit(tal);
-                    try std.testing.expect(n.leaf == null);
-                    const child = n.node.node3.ptrs[0].?;
-                    try std.testing.expect(child.leaf != null);
-                    try std.testing.expectEqual(child.leaf.?.value, 1);
-
-                    try std.testing.expectEqualDeep(child.partial.slice(), &(base ** 3));
-                    try std.testing.expectEqualDeep(n.partial.slice(), base[0..4]);
-                    try std.testing.expectEqual(n.node.node3.keys[0], 'e');
-                }
-            }
-
             fn deinit(self: *Node, allocator: mem.Allocator) void {
                 switch (self.node) {
+                    .partial => |partial| partial.deinit(allocator),
                     .node3 => self.node.node3.deinit(allocator),
                     .node16 => self.node.node16.deinit(allocator),
                     .node48 => self.node.node48.deinit(allocator),
@@ -138,6 +215,7 @@ pub fn Tree(comptime T: type) type {
                     allocator.destroy(self.leaf.?);
                 }
                 switch (self.node) {
+                    .node16 => |v| allocator.destroy(v),
                     .node48 => |v| allocator.destroy(v),
                     .node256 => |v| allocator.destroy(v),
                     else => {},
@@ -145,11 +223,26 @@ pub fn Tree(comptime T: type) type {
                 allocator.destroy(self);
             }
 
+            pub inline fn prefix_len(self: Node) u8 {
+                return switch (self.node) {
+                    .partial => |v| v.prefix_len(),
+                    else => 0,
+                };
+            }
+
+            pub inline fn check_prefix(self: Node, key: []const u8) u8 {
+                return switch (self.node) {
+                    .partial => |v| v.check_prefix(key),
+                    else => 0,
+                };
+            }
+
             /// appends a new child to the node.
             ///
             /// you should check if the node should be promoted before calling this function
             fn append(self: *Node, label: u8, child: *Node) void {
                 switch (self.node) {
+                    .partial => self.node.partial.append(label, child),
                     .node3 => self.node.node3.append(label, child),
                     .node16 => self.node.node16.append(label, child),
                     .node48 => self.node.node48.append(label, child),
@@ -160,6 +253,13 @@ pub fn Tree(comptime T: type) type {
             /// only promote when the node is full
             fn promote(self: *Node, allocator: mem.Allocator) void {
                 switch (self.node) {
+                    .partial => |v| {
+                        assert(self.childs() == 1);
+                        assert(v.node1.ptr != null);
+                        var new_node = Node3{};
+                        new_node.append(v.node1.label, v.node1.ptr.?);
+                        self.node = .{ .node3 = new_node };
+                    },
                     .node3 => |v| {
                         assert(v.childs == Node3.NUM);
 
@@ -206,123 +306,22 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            test promote {
-                const Z = Tree(usize);
-                var seed: [32]u8 = undefined;
-                try std.posix.getrandom(&seed);
-                std.debug.print("seed {d}\n", .{&seed});
-                var chacha = std.rand.ChaCha.init(seed);
-                const rand = chacha.random();
-
-                var node = Z.Node.new(tal);
-                defer node.deinit(tal);
-                const entry = struct {
-                    key: u8,
-                    node: *Z.Node,
-                };
-                var entries: [256]entry = undefined;
-                for (0..256) |i| {
-                    entries[i].key = @intCast(i);
-                    entries[i].node = Z.Node.new_leaf(tal, "", rand.int(usize));
-                }
-                for (entries, 0..) |e, i| {
-                    if (i == Node3.NUM or i == 16 or i == 48) {
-                        fassert(node.is_full(), "{d} {d}", .{ i, node.childs() });
-                    }
-                    if (node.is_full()) {
-                        assert(i == Node3.NUM or i == 16 or i == 48);
-                        switch (i) {
-                            Node3.NUM => {
-                                assert(node.node == .node3);
-                                assert(node.get(e.key) == null);
-                                node.promote(tal);
-                                assert(node.get(e.key) == null);
-                                assert(node.node == .node16);
-                            },
-                            16 => {
-                                assert(node.node == .node16);
-                                assert(node.get(e.key) == null);
-                                node.promote(tal);
-                                assert(node.get(e.key) == null);
-                                assert(node.node == .node48);
-                            },
-                            48 => {
-                                assert(node.node == .node48);
-                                assert(node.get(e.key) == null);
-                                node.promote(tal);
-                                assert(node.get(e.key) == null);
-                                assert(node.node == .node256);
-                            },
-                            else => unreachable,
-                        }
-                    }
-                    node.append(e.key, e.node);
-                }
-                for (entries) |e| {
-                    try std.testing.expect(node.get(e.key) != null);
-                }
-            }
-
-            /// compares the compressed path of a node with the current key and returns the number of equal bytes
-            fn check_prefix(self: *Node, key: []const u8) u8 {
-                var count: u8 = 0;
-                const len = @min(self.partial.length, key.len);
-                for (0..len) |i| {
-                    if (self.partial.items[i] != key[i]) {
-                        break;
-                    }
-                    count += 1;
-                }
-                fassert(count <= len, "count {d} len {d}", .{ count, len });
-                return count;
-            }
-
-            /// move the data in the prexif n positions so if we move `some_data` 4 positions
-            /// would result in `_data`
-            fn move_prefix_forwards(self: *Node, n: u8) void {
-                assert(n <= self.partial.length);
-                const new_length = self.partial.length - n;
-                mem.copyForwards(u8, self.partial.items[0..new_length], self.partial.items[n..self.partial.length]);
-                self.partial.length = new_length;
-            }
-
-            test move_prefix_forwards {
-                var node = Node.new(std.testing.allocator);
-                defer node.destroy(std.testing.allocator, true);
-
-                node.partial.appendSlice("some_data");
-                node.move_prefix_forwards(4);
-                try std.testing.expectEqualSlices(u8, "_data", node.partial.slice());
-            }
-
-            fn prefix_len(self: *const Node) u8 {
-                return self.partial.length;
-            }
-
-            fn set_prefix(self: *Node, prefix: []const u8) void {
-                assert(prefix.len <= Partial.PARTIAL_SIZE);
-
-                @memcpy(self.partial.items[0..prefix.len], prefix);
-                self.partial.length = @intCast(prefix.len);
-                assert(std.mem.eql(u8, self.partial.slice(), self.partial.items[0..self.partial.length]));
-                assert(std.mem.eql(u8, self.partial.slice(), prefix));
-            }
-
-            fn get(self: *const Node, label: u8) ?*Node {
+            inline fn get(self: *const Node, label: u8) ?*Node {
                 return switch (self.node) {
                     inline else => |v| v.get(label),
                 };
             }
 
-            fn for_each(self: *const Node, label: ?u8, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            inline fn for_each(self: *const Node, label: ?u8, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 fun(self, label, level, ctx);
                 switch (self.node) {
                     inline else => |v| v.for_each(level + 1, ctx, fun),
                 }
             }
 
-            fn set(self: *Node, label: u8, child: *Node) void {
+            inline fn set(self: *Node, label: u8, child: *Node) void {
                 return switch (self.node) {
+                    .partial => self.node.partial.node1.set(label, child),
                     .node3 => self.node.node3.set(label, child),
                     .node16 => self.node.node16.set(label, child),
                     .node48 => self.node.node48.set(label, child),
@@ -330,13 +329,14 @@ pub fn Tree(comptime T: type) type {
                 };
             }
 
-            fn childs(self: *const Node) usize {
+            inline fn childs(self: *const Node) usize {
                 return switch (self.node) {
+                    .partial => |v| if (v.node1.ptr != null) 1 else 0,
                     inline else => |v| v.childs,
                 };
             }
 
-            fn is_full(self: *const Node) bool {
+            inline fn is_full(self: *const Node) bool {
                 return switch (self.node) {
                     inline else => |v| v.is_full(),
                 };
@@ -349,30 +349,43 @@ pub fn Tree(comptime T: type) type {
                 if (self.leaf != null) {
                     return;
                 }
-                const child = self.node.node3.ptrs[0].?;
+                const child = self.node.partial.node1.ptr.?;
+                if (child.childs() != 1) {
+                    return;
+                }
                 // sum of the child label, the child prefix and the current prefix must not be less
                 // than `Partial.PARTIAL_SIZE`
                 if (child.prefix_len() + 1 + self.prefix_len() > Partial.PARTIAL_SIZE) {
                     return;
                 }
+                if (self.node == .node3) self.node = .{ .partial = self.node.node3.demote() };
+                assert(self.node == .partial);
                 self.merge(allocator);
             }
 
+            /// Can merge only if:
+            /// - only if self.leaf is null
+            /// - only if parent node has 1 child and the child node also have 1 child or 0
+            /// the nodes can be merge
             fn merge(self: *Node, allocator: mem.Allocator) void {
                 assert(self.childs() == 1);
-                assert(self.node == .node3);
+                assert(self.node == .partial);
+                assert(self.leaf == null);
+                assert(self.node.partial.node1.ptr != null);
 
-                const child = self.node.node3.ptrs[0].?;
-                const label = self.node.node3.keys[0];
-                assert(child.leaf == null or (child.leaf != null and self.leaf == null));
-                assert((self.partial.length + 1 + child.partial.length) <= Partial.PARTIAL_SIZE);
+                const child = self.node.partial.node1.ptr.?;
+                const label = self.node.partial.node1.label;
+                assert(child.childs() == 1);
+                assert(child.node == .partial);
 
-                self.partial.append(label);
-                self.partial.appendSlice(child.partial.slice());
-                self.node = child.node;
+                assert((self.prefix_len() + 1 + child.prefix_len()) <= Partial.PARTIAL_SIZE);
+
+                self.node.partial.appendSlice(&[1]u8{label});
+                self.node.partial.appendSlice(child.node.partial.slice());
                 if (child.leaf) |leaf| {
                     self.leaf = leaf;
                 }
+                self.node.partial.node1 = child.node.partial.node1;
                 child.destroy(allocator, false);
             }
 
@@ -438,8 +451,19 @@ pub fn Tree(comptime T: type) type {
                 self.childs += 1;
             }
 
-            fn is_full(self: *const Node3) bool {
+            inline fn is_full(self: *const Node3) bool {
                 return self.childs == NUM;
+            }
+
+            fn demote(self: Node3) Node.Partial {
+                fassert(self.childs == 1, "exepected 1 got {d}", .{self.childs});
+                assert(self.ptrs[0] != null);
+                return Node.Partial{
+                    .node1 = .{
+                        .label = self.keys[0],
+                        .ptr = self.ptrs[0].?,
+                    },
+                };
             }
         };
         const Node16 = struct {
@@ -469,56 +493,6 @@ pub fn Tree(comptime T: type) type {
                 return self.ptrs[idx];
             }
 
-            test Node16 {
-                const Z = Tree(usize);
-                var n = Z.Node16{};
-                const a = Z.Node.new_leaf(std.testing.allocator, "", 1);
-                defer a.deinit(std.testing.allocator);
-                const b = Z.Node.new_leaf(std.testing.allocator, "", 2);
-                defer b.deinit(std.testing.allocator);
-                const c = Z.Node.new_leaf(std.testing.allocator, "", 3);
-                defer c.deinit(std.testing.allocator);
-
-                n.append('a', a);
-                n.append('b', b);
-                n.append('c', c);
-                try std.testing.expectEqual(a, n.get('a'));
-                try std.testing.expectEqual(b, n.get('b'));
-                try std.testing.expectEqual(c, n.get('c'));
-                try std.testing.expectEqual(null, n.get('d'));
-
-                n.append('d', c);
-                n.append('e', c);
-                n.append('f', c);
-                n.append('0', c);
-                n.append('1', c);
-                n.append('2', c);
-                n.append('3', c);
-                n.append('4', c);
-                n.append('5', c);
-                n.append('6', c);
-                n.append('7', c);
-                n.append('8', c);
-                n.append('9', c);
-                const node16 = try std.testing.allocator.create(Z.Node16);
-                node16.* = n;
-
-                var node = Z.Node{
-                    .node = .{ .node16 = node16 },
-                };
-
-                const keylist = [16]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
-                for (keylist) |k| {
-                    try std.testing.expect(node.get(k) != null);
-                }
-                node.promote(std.testing.allocator);
-
-                for (keylist) |k| {
-                    try std.testing.expect(node.get(k) != null);
-                }
-                std.testing.allocator.destroy(node.node.node48);
-            }
-
             fn set(self: *Node16, label: u8, child: *Node) void {
                 assert(self.get(label) != null);
 
@@ -537,7 +511,7 @@ pub fn Tree(comptime T: type) type {
                 self.childs += 1;
             }
 
-            fn is_full(self: *const Node16) bool {
+            inline fn is_full(self: *const Node16) bool {
                 return self.childs == 16;
             }
         };
@@ -582,7 +556,7 @@ pub fn Tree(comptime T: type) type {
                 self.childs += 1;
             }
 
-            fn is_full(self: *const Node48) bool {
+            inline fn is_full(self: *const Node48) bool {
                 return self.childs == 48;
             }
         };
@@ -623,7 +597,7 @@ pub fn Tree(comptime T: type) type {
                 self.idxs[label] = child;
             }
 
-            fn is_full(self: *const Node256) bool {
+            inline fn is_full(self: *const Node256) bool {
                 assert(self.childs != 256);
                 return false;
             }
@@ -650,7 +624,7 @@ pub fn Tree(comptime T: type) type {
         allocator: mem.Allocator,
 
         pub fn init(allocator: mem.Allocator) ARTree {
-            var root = Node.new(allocator);
+            var root = Node.new(allocator, Node3);
             const node256 = allocator.create(Node256) catch unreachable;
             node256.* = Node256{};
             root.node = .{ .node256 = node256 };
@@ -703,36 +677,120 @@ pub fn Tree(comptime T: type) type {
             while (search.len != 0) {
                 const eq = node.check_prefix(search);
                 if (eq != node.prefix_len()) {
-                    assert(search[eq] != node.partial.items[eq]);
-                    assert(node.partial.length > 0);
+                    assert(node.node == .partial);
                     assert(eq < node.prefix_len());
+                    const prefix = node.node.partial.items;
+                    assert(search[eq] != prefix[eq]);
+                    assert(node.node.partial.length > 0);
 
-                    const label_leaf = search[eq];
-                    const node_leaf = node.partial.items[eq];
+                    if (eq == search.len) {
+                        const label_node = prefix[eq];
+                        // the key is a subset of the compressed path
+                        const new_node_leaf = Node.new_leaf(self.allocator, search, value);
+                        assert(node.node == .partial);
 
-                    const new_node_leaf = Node.new_leaf(self.allocator, search[eq + 1 ..], value);
+                        node.node.partial.move_prefix_forwards(eq + 1);
 
-                    var new_node = Node.new(self.allocator);
-                    new_node.set_prefix(search[0..eq]);
-                    node.move_prefix_forwards(eq + 1);
+                        new_node_leaf.append(label_node, node);
 
-                    new_node.append(label_leaf, new_node_leaf);
-                    new_node.append(node_leaf, node);
+                        // replace node in parent
+                        parent.?.set(prev_search.?, new_node_leaf);
 
-                    // replace node in parent
-                    parent.?.set(prev_search.?, new_node);
-                    return null;
+                        node.merge_if_possible(self.allocator);
+
+                        return null;
+                    } else if (eq < search.len and eq != 0) {
+                        // the key is not a subset of the compressed path
+                        const parent_compressed_path = search[0 .. eq - 1];
+                        const leaf_prefix = if (eq + 1 < search.len) search[eq + 1 ..] else &[_]u8{};
+                        const label_intermediate = search[eq - 1];
+                        const label_leaf = search[eq];
+                        const label_node = prefix[eq];
+
+                        const new_node_parent = Node.new(self.allocator, Node.Partial);
+                        new_node_parent.node.partial.set_prefix(parent_compressed_path);
+
+                        const intermadiate_node = Node.new(self.allocator, Node3);
+                        const new_leaf_node = Node.new_leaf(self.allocator, leaf_prefix, value);
+
+                        new_node_parent.append(label_intermediate, intermadiate_node);
+
+                        intermadiate_node.append(label_node, node);
+                        intermadiate_node.append(label_leaf, new_leaf_node);
+
+                        node.node.partial.move_prefix_forwards(eq + 1);
+
+                        parent.?.set(prev_search.?, new_node_parent);
+
+                        node.merge_if_possible(self.allocator);
+
+                        return null;
+                    } else if (eq < search.len and eq == 0) {
+                        // eq == 0 -> true
+                        const leaf_prefix = if (eq + 1 < search.len) search[eq + 1 ..] else &[_]u8{};
+                        const label_node = prefix[eq];
+                        const label_leaf = search[eq];
+
+                        const new_node_parent = Node.new(self.allocator, Node3);
+                        const new_leaf_node = Node.new_leaf(self.allocator, leaf_prefix, value);
+
+                        new_node_parent.append(label_node, node);
+                        new_node_parent.append(label_leaf, new_leaf_node);
+
+                        node.node.partial.move_prefix_forwards(eq + 1);
+
+                        parent.?.set(prev_search.?, new_node_parent);
+
+                        node.merge_if_possible(self.allocator);
+
+                        return null;
+                    } else unreachable;
                 }
                 search = search[eq..];
                 if (search.len == 0) {
-                    // create or update leaf TODO implement logic for lazy expansion of leaf
-                    if (node.leaf) |leaf| {
-                        response = leaf.value;
-                        leaf.value = value;
+                    if (node.prefix_len() == eq) {
+                        // replace the current leaf as the search and prefix are the same
+                        if (node.leaf) |leaf| {
+                            response = leaf.value;
+                            leaf.value = value;
+                        } else {
+                            node.leaf = Leaf.new(self.allocator, value);
+                        }
+                        return response;
                     } else {
-                        node.leaf = Leaf.new(self.allocator, value);
+                        // gets here only the search completely to the prefix but the prefix is larger
+                        // here we swap the nodes.
+                        //
+                        // before:
+                        // parent node (value1, prefix: "1234")
+                        //
+                        // new_key: "12", new_value: value2
+                        //
+                        // after:
+                        // parent node (value2, prefix: "12")
+                        // edge to the child (label: "3")
+                        // child node (value1, prefix: "4")
+                        const eql_set = node.node.partial.items[0..eq];
+                        const new_parent_node = Node.new_leaf(self.allocator, eql_set, value);
+                        if (node.node.partial.items[eq..].len > 0) {
+                            // set the current node to be child of the new parent
+                            new_parent_node.append(node.node.partial.items[eq + 1], node);
+                            if (node.node.partial.items[eq + 1 ..].len > 0) {
+                                node.node.partial.move_prefix_forwards(eq + 1);
+                            } else {
+                                // transform to node3
+                                node.promote(self.allocator);
+                            }
+                        } else {
+                            // transform to node3
+                            node.promote(self.allocator);
+                        }
+                        assert(prev_search != null);
+                        assert(parent != null);
+                        parent.?.set(prev_search.?, new_parent_node);
+
+                        return null;
                     }
-                    return response;
                 }
 
                 if (node.get(search[0])) |n| {
@@ -741,12 +799,51 @@ pub fn Tree(comptime T: type) type {
                     node = n;
                     search = search[1..];
                 } else {
-                    if (node.is_full()) {
-                        node.promote(self.allocator);
+                    switch (node.node) {
+                        .partial => {
+                            if (!node.is_full()) {
+                                // partial has empty child so we just append the leaf
+                                const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                node.append(search[0], new_node_leaf);
+                                return null;
+                            }
+                            if (node.node.partial.length == 0) {
+                                node.promote(self.allocator);
+                                const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                node.append(search[0], new_node_leaf);
+                                return null;
+                            } else {
+                                // partial cannot be appended, but cannot be promoted mindessly
+                                // because the partial would be lose
+
+                                // save prefix information
+                                const prefix_items = node.node.partial.items;
+                                const prefix_length = node.node.partial.length;
+
+                                node.promote(self.allocator);
+
+                                const new_parent_node = Node.new(self.allocator, Node.Partial);
+                                // set all te complete previous prefix but ommits the last byte
+                                new_parent_node.node.partial.set_prefix(prefix_items[0 .. prefix_length - 1]);
+                                // swap nodes. `new_parent_node` is the child of the previous parent of `node`
+                                // and now `node` is child of `new_parent_node`
+                                new_parent_node.append(prefix_items[prefix_length - 1], node);
+                                parent.?.set(prev_search.?, new_parent_node);
+
+                                const new_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                node.append(search[0], new_leaf);
+                                return null;
+                            }
+                        },
+                        else => {
+                            if (node.is_full()) {
+                                node.promote(self.allocator);
+                            }
+                            const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                            node.append(search[0], new_node_leaf);
+                            return null;
+                        },
                     }
-                    const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
-                    node.append(search[0], new_node_leaf);
-                    return null;
                 }
             }
             // create or update leaf TODO implement logic for lazy expansion of leaf
@@ -943,17 +1040,26 @@ const doInsert = struct {
     }
 }.func;
 
-// test "insert many keys" {
-//     var lines = try readFileLines(tal, "./testdata/words.txt");
-//     defer deinitLines(tal, &lines);
-//     inline for (ValueTypes) |T| {
-//         var t = Tree(T).init(tal);
-//         defer t.deinit();
-//         const _lines = try eachLineDo(doInsert, lines, &t, null, T);
-//         _ = _lines;
-//         // try std.testing.expectEqual(t.size, _lines);
-//     }
-// }
+const doSearch = struct {
+    fn func(line: [:0]const u8, linei: usize, container: anytype, _: anytype, comptime T: type) anyerror!void {
+        const v = container.get(line);
+        try std.testing.expectEqual(v, valAsType(T, linei));
+        // try std.testing.expect(result == .missing);
+    }
+}.func;
+
+test "insert many keys" {
+    var lines = try readFileLines(tal, "./testdata/words.txt");
+    defer deinitLines(tal, &lines);
+    inline for (ValueTypes) |T| {
+        var t = Tree(T).init(tal);
+        defer t.deinit();
+        const _lines = try eachLineDo(doInsert, lines, &t, null, T);
+        _ = _lines;
+        _ = try eachLineDo(doSearch, lines, &t, null, T);
+        // try std.testing.expectEqual(t.size, _lines);
+    }
+}
 
 pub fn readFileLines(allocator: mem.Allocator, filename: []const u8) !std.ArrayList([:0]const u8) {
     var lines = std.ArrayList([:0]const u8).init(allocator);
@@ -989,10 +1095,141 @@ pub fn eachLineDo(
 ) !usize {
     var linei: usize = 1;
     for (lines.items) |line| {
+        // std.debug.print("inserting line {d}\n", .{linei});
         try do(line, linei, container, data, T);
         linei += 1;
     }
     return linei - 1;
+}
+
+test "promote" {
+    const Z = Tree(usize);
+    var seed: [32]u8 = undefined;
+    try std.posix.getrandom(&seed);
+    std.debug.print("seed {d}\n", .{&seed});
+    var chacha = std.rand.ChaCha.init(seed);
+    const rand = chacha.random();
+
+    var node = Z.Node.new(tal, Z.Node3);
+    defer node.deinit(tal);
+    const entry = struct {
+        key: u8,
+        node: *Z.Node,
+    };
+    var entries: [256]entry = undefined;
+    for (0..256) |i| {
+        entries[i].key = @intCast(i);
+        entries[i].node = Z.Node.new_leaf(tal, "", rand.int(usize));
+    }
+    for (entries, 0..) |e, i| {
+        if (i == Z.Node3.NUM or i == 16 or i == 48) {
+            fassert(node.is_full(), "{d} {d}", .{ i, node.childs() });
+        }
+        if (node.is_full()) {
+            assert(i == Z.Node3.NUM or i == 16 or i == 48);
+            switch (i) {
+                Z.Node3.NUM => {
+                    assert(node.node == .node3);
+                    assert(node.get(e.key) == null);
+                    node.promote(tal);
+                    assert(node.get(e.key) == null);
+                    assert(node.node == .node16);
+                },
+                16 => {
+                    assert(node.node == .node16);
+                    assert(node.get(e.key) == null);
+                    node.promote(tal);
+                    assert(node.get(e.key) == null);
+                    assert(node.node == .node48);
+                },
+                48 => {
+                    assert(node.node == .node48);
+                    assert(node.get(e.key) == null);
+                    node.promote(tal);
+                    assert(node.get(e.key) == null);
+                    assert(node.node == .node256);
+                },
+                else => unreachable,
+            }
+        }
+        node.append(e.key, e.node);
+    }
+    for (entries) |e| {
+        try std.testing.expect(node.get(e.key) != null);
+    }
+}
+
+test "new_leaf" {
+    {
+        const n = Tree(usize).Node.new_leaf(tal, "key", 1);
+        defer n.deinit(tal);
+        try std.testing.expect(n.leaf != null);
+        try std.testing.expectEqual(n.leaf.?.value, 1);
+    }
+    {
+        const base = [5]u8{ 'l', 'a', 'r', 'g', 'e' };
+        const key: []const u8 = &(base ** 4);
+        const n = Tree(usize).Node.new_leaf(tal, key, 1);
+        defer n.deinit(tal);
+        try std.testing.expect(n.leaf == null);
+        const child = n.node.partial.node1.ptr.?;
+        try std.testing.expect(child.leaf != null);
+        try std.testing.expectEqual(child.leaf.?.value, 1);
+
+        try std.testing.expectEqualDeep(child.node.partial.slice(), &(base ** 3));
+        try std.testing.expectEqualDeep(n.node.partial.slice(), base[0..4]);
+        try std.testing.expectEqual(n.node.partial.node1.label, 'e');
+    }
+}
+
+test "Node16" {
+    const Z = Tree(usize);
+    var n = Z.Node16{};
+    const a = Z.Node.new_leaf(std.testing.allocator, "", 1);
+    defer a.deinit(std.testing.allocator);
+    const b = Z.Node.new_leaf(std.testing.allocator, "", 2);
+    defer b.deinit(std.testing.allocator);
+    const c = Z.Node.new_leaf(std.testing.allocator, "", 3);
+    defer c.deinit(std.testing.allocator);
+
+    n.append('a', a);
+    n.append('b', b);
+    n.append('c', c);
+    try std.testing.expectEqual(a, n.get('a'));
+    try std.testing.expectEqual(b, n.get('b'));
+    try std.testing.expectEqual(c, n.get('c'));
+    try std.testing.expectEqual(null, n.get('d'));
+
+    n.append('d', c);
+    n.append('e', c);
+    n.append('f', c);
+    n.append('0', c);
+    n.append('1', c);
+    n.append('2', c);
+    n.append('3', c);
+    n.append('4', c);
+    n.append('5', c);
+    n.append('6', c);
+    n.append('7', c);
+    n.append('8', c);
+    n.append('9', c);
+    const node16 = try std.testing.allocator.create(Z.Node16);
+    node16.* = n;
+
+    var node = Z.Node{
+        .node = .{ .node16 = node16 },
+    };
+
+    const keylist = [16]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+    for (keylist) |k| {
+        try std.testing.expect(node.get(k) != null);
+    }
+    node.promote(std.testing.allocator);
+
+    for (keylist) |k| {
+        try std.testing.expect(node.get(k) != null);
+    }
+    std.testing.allocator.destroy(node.node.node48);
 }
 
 test "size" {
