@@ -89,6 +89,24 @@ pub fn Pool(T: type) type {
             }
 
             fn can_be_free(self: *BlockReusableItems) bool {
+                if (self.ptr.lenght == self.reusable.items.len) {
+                    var count: usize = 0;
+                    for (self.ptr.values[0..self.ptr.lenght]) |*e| {
+                        const ptr = @intFromPtr(e);
+                        for (self.reusable.items) |r| {
+                            if (r == ptr) {
+                                count += 1;
+                                break;
+                            }
+                        }
+                    }
+                    count = BLOCK_SIZE - count;
+                    if (!(count == self.ptr.lenght)) {
+                        std.debug.print("count {d} lenght {d} reuse {d}\n", .{ count, self.ptr.lenght, self.reusable.items.len });
+                        unreachable;
+                    }
+                    return true;
+                }
                 return self.ptr.lenght == self.reusable.items.len;
             }
         };
@@ -98,10 +116,18 @@ pub fn Pool(T: type) type {
 
             /// track all the allocated blocks and the reusable elements
             blocks: List,
+
             inline fn init(allocator: Allocator) ReusableList {
                 return .{
                     .blocks = List.init(allocator),
                 };
+            }
+
+            inline fn deinit(self: ReusableList) void {
+                for (self.blocks.values.items) |b| {
+                    b.deinit();
+                }
+                self.blocks.deinit();
             }
 
             fn reuse(self: *ReusableList, allocated_list: *const AllocatedList) ?*T {
@@ -113,13 +139,13 @@ pub fn Pool(T: type) type {
                 return null;
             }
 
-            inline fn get(self: ReusableList, block: *Block) ?BlockReusableItems {
+            inline fn get(self: ReusableList, block: *Block) ?*BlockReusableItems {
                 const index = self.blocks.index_of(.{
                     .ptr = block,
                     .reusable = undefined,
                 }) orelse return null;
 
-                return self.blocks.values.items[index];
+                return &self.blocks.values.items[index];
             }
         };
 
@@ -134,12 +160,20 @@ pub fn Pool(T: type) type {
         /// Cache the last allocated for fast create
         last_allocated: *Block = undefined,
 
-        pub fn init(allocator: Allocator) Self {
+        pub inline fn init(allocator: Allocator) Self {
             return Self{
                 .allocator = allocator,
                 .allocated_list = AllocatedList.init(allocator),
                 .reusable_list = ReusableList.init(allocator),
             };
+        }
+
+        pub inline fn deinit(self: Self) void {
+            self.reusable_list.deinit();
+            for (self.allocated_list.slice()) |b| {
+                self.allocator.destroy(b);
+            }
+            self.allocated_list.deinit();
         }
 
         fn new_block(self: *Self) Error!*Block {
@@ -166,7 +200,7 @@ pub fn Pool(T: type) type {
             return block.next();
         }
 
-        pub fn destroy(self: *Self, item: *T) Error!void {
+        pub fn destroy(self: *Self, item: *T) void {
             for (self.allocated_list.slice()) |block| {
                 const ptr = @intFromPtr(item);
                 const start = @intFromPtr(block);
@@ -180,10 +214,10 @@ pub fn Pool(T: type) type {
                 }
                 const index = @divExact(offset, ITEM_SIZE);
                 var reusable_block = self.reusable_list.get(block).?;
-                try reusable_block.reusable.append(index);
+                reusable_block.reusable.append(index) catch unreachable;
 
                 if (reusable_block.can_be_free()) {
-                    self.reusable_list.blocks.remove(reusable_block);
+                    self.reusable_list.blocks.remove(reusable_block.*);
                     self.allocated_list.remove(reusable_block.ptr);
 
                     if (reusable_block.ptr == self.last_allocated and self.allocated_list.len() != 0) {
@@ -296,7 +330,32 @@ fn SortedList(T: type, compare: fn (T, T) std.math.Order) type {
 }
 
 test "TODO" {
-    std.testing.refAllDecls(Pool(usize));
+    const MyStruct = struct {
+        num: usize,
+        some: struct {
+            num1: usize,
+            num2: usize,
+        },
+    };
+    var p = Pool(MyStruct).init(std.testing.allocator);
+    defer p.deinit();
+
+    var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
+    defer elems.deinit();
+    for (0..515) |_| {
+        const s = try p.create();
+        s.num = 1;
+        s.some.num1 = 2;
+        s.some.num2 = 3;
+        try elems.append(s);
+    }
+
+    for (elems.items) |e| {
+        try std.testing.expectEqual(1, e.num);
+        try std.testing.expectEqual(2, e.some.num1);
+        try std.testing.expectEqual(3, e.some.num2);
+        p.destroy(e);
+    }
 }
 
 const ImplOrder = struct {
