@@ -84,4 +84,11 @@ fn check(
         .optimize = opts.optimize,
     });
     step_check.dependOn(&lib.step);
+
+    const pool_lib = b.addTest(.{
+        .root_source_file = b.path("src/pool_allocator.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+    });
+    step_check.dependOn(&pool_lib.step);
 }
