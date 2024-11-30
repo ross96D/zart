@@ -99,9 +99,16 @@ pub fn Pool(T: type, config: PoolConfig) type {
 
         const ReusableList = struct {
             const List = SortedList(BlockReusableItems, BlockReusableItems.order);
+            const LastFree = struct {
+                block: *Block,
+                index: usize,
+            };
 
             /// track all the allocated blocks and the reusable elements
             blocks: List,
+
+            /// cache the last free for fast reuse
+            last_free: ?LastFree = null,
 
             inline fn init(allocator: Allocator) ReusableList {
                 return .{
@@ -117,12 +124,20 @@ pub fn Pool(T: type, config: PoolConfig) type {
             }
 
             fn reuse(self: *ReusableList, allocated_list: *const AllocatedList) ?*T {
+                if (self.last_free) |last| {
+                    self.last_free = null;
+                    return &last.block.values[last.index];
+                }
                 for (self.blocks.slice()) |*block| {
                     if (block.reuse(allocated_list)) |elem| {
                         return elem;
                     }
                 }
                 return null;
+            }
+
+            inline fn cache_last_free(self: *ReusableList, block: *Block, index: usize) void {
+                self.last_free = LastFree{ .block = block, .index = index };
             }
 
             inline fn get(self: ReusableList, block: *Block) ?*BlockReusableItems {
@@ -132,6 +147,18 @@ pub fn Pool(T: type, config: PoolConfig) type {
                 }) orelse return null;
 
                 return &self.blocks.values.items[index];
+            }
+
+            inline fn get_or_create(self: *ReusableList, allocator: Allocator, block: *Block) *BlockReusableItems {
+                const index = self.blocks.index_of(.{
+                    .ptr = block,
+                    .reusable = undefined,
+                });
+                if (index) |i| {
+                    return &self.blocks.values.items[i];
+                }
+                const i = self.blocks.append(BlockReusableItems.init(allocator, block)) catch unreachable;
+                return &self.blocks.values.items[i];
             }
         };
 
@@ -166,8 +193,7 @@ pub fn Pool(T: type, config: PoolConfig) type {
             var block = try self.allocator.create(Block);
             block.reset();
             self.last_allocated = block;
-            try self.allocated_list.append(block);
-            try self.reusable_list.blocks.append(BlockReusableItems.init(self.allocator, block));
+            _ = try self.allocated_list.append(block);
             return block;
         }
 
@@ -199,7 +225,8 @@ pub fn Pool(T: type, config: PoolConfig) type {
                     continue;
                 }
                 const index = @divExact(offset, ITEM_SIZE);
-                var reusable_block = self.reusable_list.get(block).?;
+
+                var reusable_block = self.reusable_list.get_or_create(self.allocator, block);
                 reusable_block.reusable.append(index) catch unreachable;
 
                 if (reusable_block.can_be_free()) {
@@ -216,7 +243,9 @@ pub fn Pool(T: type, config: PoolConfig) type {
                     }
 
                     self.allocator.destroy(block);
+                    break;
                 }
+                self.reusable_list.cache_last_free(block, index);
                 break;
             }
         }
@@ -249,12 +278,13 @@ fn SortedList(T: type, compare: fn (T, T) std.math.Order) type {
             return self.values.items;
         }
 
-        pub fn append(self: *Self, v: T) Error!void {
+        pub fn append(self: *Self, v: T) Error!usize {
             const pos = self.position(v);
             try self.values.append(v);
 
             std.mem.copyBackwards(T, self.values.items[pos + 1 ..], self.values.items[pos .. self.len() - 1]);
             self.values.items[pos] = v;
+            return pos;
         }
 
         pub inline fn index_of(self: Self, v: T) ?usize {
@@ -330,11 +360,14 @@ test "bench" {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
 
-        var p = Pool(MyStruct, .{}).init(gpa.allocator());
+        var p = Pool(MyStruct, .{ .block_size = 512 }).init(gpa.allocator());
         defer p.deinit();
 
         var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
         defer elems.deinit();
+
+        var _timer = try std.time.Timer.start();
+        _timer.reset();
         for (0..LOOPS) |_| {
             const s = try p.create();
             s.num = 1;
@@ -342,15 +375,18 @@ test "bench" {
             s.some.num2 = 3;
             try elems.append(s);
         }
+        const d = _timer.lap();
 
+        _timer = try std.time.Timer.start();
         for (elems.items) |e| {
             try std.testing.expectEqual(1, e.num);
             try std.testing.expectEqual(2, e.some.num1);
             try std.testing.expectEqual(3, e.some.num2);
             p.destroy(e);
         }
+        const s = _timer.read();
         const t = timer.read();
-        std.debug.print("Pool {}ms\n", .{t / 1000000});
+        std.debug.print("Pool {}ms ins {}ms del {}ms\n", .{ t / 1000000, d / 1000000, s / 1000000 });
     }
 
     {
@@ -362,6 +398,9 @@ test "bench" {
 
         var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
         defer elems.deinit();
+
+        var _timer = try std.time.Timer.start();
+        _timer.reset();
         for (0..LOOPS) |_| {
             const s = try allocator.create(MyStruct);
             s.num = 1;
@@ -369,6 +408,9 @@ test "bench" {
             s.some.num2 = 3;
             try elems.append(s);
         }
+        const d = _timer.lap();
+
+        _timer = try std.time.Timer.start();
 
         for (elems.items) |e| {
             try std.testing.expectEqual(1, e.num);
@@ -376,8 +418,9 @@ test "bench" {
             try std.testing.expectEqual(3, e.some.num2);
             allocator.destroy(e);
         }
+        const s = _timer.read();
         const t = timer.read();
-        std.debug.print("GPA {}ms\n", .{t / 1000000});
+        std.debug.print("GPA  {}ms ins {}ms del {}ms\n", .{ t / 1000000, d / 1000000, s / 1000000 });
     }
 }
 
@@ -477,7 +520,7 @@ test "bench sorted" {
         var sorted_list = SortedList(Struct, Struct.order).init(gpa.allocator());
         defer sorted_list.deinit();
         for (list.items) |entry| {
-            try sorted_list.append(Struct{ .k = entry, .v = std.ArrayList(usize).init(gpa.allocator()) });
+            _ = try sorted_list.append(Struct{ .k = entry, .v = std.ArrayList(usize).init(gpa.allocator()) });
         }
 
         for (list.items) |entry| {
@@ -502,8 +545,8 @@ test SortedList {
         const ptr1: *TPool.Block = @ptrFromInt(0x7f9cf6f53fe8);
         const ptr2: *TPool.Block = @ptrFromInt(0x7f9cf6f65000);
         defer list.deinit();
-        try list.append(ptr1);
-        try list.append(ptr2);
+        _ = try list.append(ptr1);
+        _ = try list.append(ptr2);
         list.remove(ptr1);
         try std.testing.expectEqual(ptr2, list.values.items[0]);
     }
@@ -512,9 +555,9 @@ test SortedList {
         var list = SortedList(usize, ImplOrder.order_usize).init(std.testing.allocator);
         defer list.deinit();
 
-        try list.append(3);
-        try list.append(5);
-        try list.append(1);
+        _ = try list.append(3);
+        _ = try list.append(5);
+        _ = try list.append(1);
         const s = list.slice();
         try std.testing.expectEqual(1, s[0]);
         try std.testing.expectEqual(3, s[1]);
@@ -527,17 +570,17 @@ test SortedList {
         list.remove(3);
         try std.testing.expectEqual(1, s[0]);
         try std.testing.expectEqual(5, s[1]);
-        try list.append(3);
+        _ = try list.append(3);
 
         list.remove(1);
         try std.testing.expectEqual(3, s[0]);
         try std.testing.expectEqual(5, s[1]);
-        try list.append(1);
+        _ = try list.append(1);
 
         list.remove(5);
         try std.testing.expectEqual(1, s[0]);
         try std.testing.expectEqual(3, s[1]);
-        try list.append(5);
+        _ = try list.append(5);
     }
 
     { // fuzzy
@@ -551,7 +594,7 @@ test SortedList {
 
             for (0..5000) |_| {
                 const i = random.intRangeAtMost(usize, 0, 100);
-                try list.append(i);
+                _ = try list.append(i);
                 if (random.boolean()) {
                     list.remove(i);
                 }
@@ -580,7 +623,7 @@ test SortedList {
 
             for (0..5000) |_| {
                 const i = random.intRangeAtMost(usize, 0, 100);
-                try list.append(i);
+                _ = try list.append(i);
                 if (random.boolean()) {
                     list.remove(i);
                 } else {
