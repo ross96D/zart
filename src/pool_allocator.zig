@@ -20,9 +20,13 @@ const Allocator = std.mem.Allocator;
 const Error = Allocator.Error;
 const assert = std.debug.assert;
 
-pub fn Pool(T: type) type {
+const PoolConfig = struct {
+    block_size: usize = 4086,
+};
+
+pub fn Pool(T: type, config: PoolConfig) type {
     const ITEM_SIZE = @sizeOf(T);
-    const BLOCK_SIZE = 10000;
+    const BLOCK_SIZE = config.block_size;
     return struct {
         const Self = @This();
 
@@ -326,7 +330,7 @@ test "bench" {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
 
-        var p = Pool(MyStruct).init(gpa.allocator());
+        var p = Pool(MyStruct, .{}).init(gpa.allocator());
         defer p.deinit();
 
         var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
@@ -385,7 +389,7 @@ test Pool {
             num2: usize,
         },
     };
-    var p = Pool(MyStruct).init(std.testing.allocator);
+    var p = Pool(MyStruct, .{}).init(std.testing.allocator);
     defer p.deinit();
 
     var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
@@ -418,11 +422,85 @@ const ImplOrder = struct {
     }
 };
 
+test "bench sorted" {
+    var time = try std.time.Timer.start();
+
+    var list = std.ArrayList(usize).init(std.testing.allocator);
+    const seed: u64 = @intCast(std.time.timestamp());
+    var rand = std.Random.DefaultPrng.init(seed);
+    const random = rand.random();
+    for (0..50000) |_| {
+        try list.append(random.int(usize));
+    }
+
+    {
+        time.reset();
+
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+
+        var hash = std.AutoHashMap(usize, std.ArrayList(usize)).init(gpa.allocator());
+        defer hash.deinit();
+        for (list.items) |entry| {
+            try hash.put(entry, std.ArrayList(usize).init(gpa.allocator()));
+        }
+
+        for (list.items) |entry| {
+            if (entry % 2 == 0) {
+                _ = hash.remove(entry);
+            }
+        }
+
+        var iter = hash.iterator();
+        while (iter.next()) |e| {
+            _ = hash.get(e.key_ptr.*);
+        }
+
+        std.debug.print("hash {}ms\n", .{time.read() / 1000000});
+    }
+
+    {
+        time.reset();
+
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+
+        const Struct = struct {
+            const Self = @This();
+            k: usize,
+            v: std.ArrayList(usize),
+            fn order(a: Self, b: Self) std.math.Order {
+                return std.math.order(a.k, b.k);
+            }
+        };
+
+        var sorted_list = SortedList(Struct, Struct.order).init(gpa.allocator());
+        defer sorted_list.deinit();
+        for (list.items) |entry| {
+            try sorted_list.append(Struct{ .k = entry, .v = std.ArrayList(usize).init(gpa.allocator()) });
+        }
+
+        for (list.items) |entry| {
+            if (entry % 2 == 0) {
+                _ = sorted_list.remove(Struct{ .k = entry, .v = undefined });
+            }
+        }
+
+        for (sorted_list.values.items) |e| {
+            const idx = sorted_list.index_of(e);
+            _ = sorted_list.values.items[idx.?];
+        }
+
+        std.debug.print("sorted {}ms\n", .{time.read() / 1000000});
+    }
+}
+
 test SortedList {
     {
-        var list = SortedList(*Pool(usize).Block, Pool(usize).Block.order).init(std.testing.allocator);
-        const ptr1: *Pool(usize).Block = @ptrFromInt(0x7f9cf6f53fe8);
-        const ptr2: *Pool(usize).Block = @ptrFromInt(0x7f9cf6f65000);
+        const TPool = Pool(usize, .{});
+        var list = SortedList(*TPool.Block, TPool.Block.order).init(std.testing.allocator);
+        const ptr1: *TPool.Block = @ptrFromInt(0x7f9cf6f53fe8);
+        const ptr2: *TPool.Block = @ptrFromInt(0x7f9cf6f65000);
         defer list.deinit();
         try list.append(ptr1);
         try list.append(ptr2);
@@ -467,7 +545,7 @@ test SortedList {
             var list = SortedList(usize, ImplOrder.order_usize).init(std.testing.allocator);
             defer list.deinit();
 
-            const seed: u64 = 1732828618; // @intCast(std.time.timestamp());
+            const seed: u64 = @intCast(std.time.timestamp());
             var rand = std.Random.DefaultPrng.init(seed);
             const random = rand.random();
 
