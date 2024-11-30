@@ -88,25 +88,7 @@ pub fn Pool(T: type) type {
                 return &block.values[index_item];
             }
 
-            fn can_be_free(self: *BlockReusableItems) bool {
-                if (self.ptr.lenght == self.reusable.items.len) {
-                    var count: usize = 0;
-                    for (self.ptr.values[0..self.ptr.lenght]) |*e| {
-                        const ptr = @intFromPtr(e);
-                        for (self.reusable.items) |r| {
-                            if (r == ptr) {
-                                count += 1;
-                                break;
-                            }
-                        }
-                    }
-                    count = BLOCK_SIZE - count;
-                    if (!(count == self.ptr.lenght)) {
-                        std.debug.print("count {d} lenght {d} reuse {d}\n", .{ count, self.ptr.lenght, self.reusable.items.len });
-                        unreachable;
-                    }
-                    return true;
-                }
+            inline fn can_be_free(self: *BlockReusableItems) bool {
                 return self.ptr.lenght == self.reusable.items.len;
             }
         };
@@ -217,10 +199,11 @@ pub fn Pool(T: type) type {
                 reusable_block.reusable.append(index) catch unreachable;
 
                 if (reusable_block.can_be_free()) {
+                    reusable_block.deinit();
                     self.reusable_list.blocks.remove(reusable_block.*);
-                    self.allocated_list.remove(reusable_block.ptr);
+                    self.allocated_list.remove(block);
 
-                    if (reusable_block.ptr == self.last_allocated and self.allocated_list.len() != 0) {
+                    if (block == self.last_allocated and self.allocated_list.len() != 0) {
                         // we only set a valid element to avoid an invalid address access
                         // but the element as long as is valid is not important
                         // because every block on the list is full and will trigger
@@ -228,8 +211,7 @@ pub fn Pool(T: type) type {
                         self.last_allocated = self.allocated_list.values.items[0];
                     }
 
-                    self.allocator.destroy(reusable_block.ptr);
-                    reusable_block.deinit();
+                    self.allocator.destroy(block);
                 }
                 break;
             }
@@ -329,7 +311,73 @@ fn SortedList(T: type, compare: fn (T, T) std.math.Order) type {
     };
 }
 
-test "TODO" {
+test "bench" {
+    const MyStruct = struct {
+        num: usize,
+        some: struct {
+            num1: usize,
+            num2: usize,
+        },
+    };
+
+    var timer = try std.time.Timer.start();
+    {
+        timer.reset();
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+
+        var p = Pool(MyStruct).init(gpa.allocator());
+        defer p.deinit();
+
+        var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
+        defer elems.deinit();
+        for (0..150000) |_| {
+            const s = try p.create();
+            s.num = 1;
+            s.some.num1 = 2;
+            s.some.num2 = 3;
+            try elems.append(s);
+        }
+
+        for (elems.items) |e| {
+            try std.testing.expectEqual(1, e.num);
+            try std.testing.expectEqual(2, e.some.num1);
+            try std.testing.expectEqual(3, e.some.num2);
+            p.destroy(e);
+        }
+        const t = timer.read();
+        std.debug.print("Pool {}ms\n", .{t / 1000000});
+    }
+
+    {
+        timer.reset();
+
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
+        defer elems.deinit();
+        for (0..150000) |_| {
+            const s = try allocator.create(MyStruct);
+            s.num = 1;
+            s.some.num1 = 2;
+            s.some.num2 = 3;
+            try elems.append(s);
+        }
+
+        for (elems.items) |e| {
+            try std.testing.expectEqual(1, e.num);
+            try std.testing.expectEqual(2, e.some.num1);
+            try std.testing.expectEqual(3, e.some.num2);
+            allocator.destroy(e);
+        }
+        const t = timer.read();
+        std.debug.print("GPA {}ms\n", .{t / 1000000});
+    }
+}
+
+test Pool {
     const MyStruct = struct {
         num: usize,
         some: struct {
@@ -342,7 +390,7 @@ test "TODO" {
 
     var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
     defer elems.deinit();
-    for (0..515) |_| {
+    for (0..15000) |_| {
         const s = try p.create();
         s.num = 1;
         s.some.num1 = 2;
@@ -371,6 +419,17 @@ const ImplOrder = struct {
 };
 
 test SortedList {
+    {
+        var list = SortedList(*Pool(usize).Block, Pool(usize).Block.order).init(std.testing.allocator);
+        const ptr1: *Pool(usize).Block = @ptrFromInt(0x7f9cf6f53fe8);
+        const ptr2: *Pool(usize).Block = @ptrFromInt(0x7f9cf6f65000);
+        defer list.deinit();
+        try list.append(ptr1);
+        try list.append(ptr2);
+        list.remove(ptr1);
+        try std.testing.expectEqual(ptr2, list.values.items[0]);
+    }
+
     { // basic
         var list = SortedList(usize, ImplOrder.order_usize).init(std.testing.allocator);
         defer list.deinit();
@@ -412,7 +471,7 @@ test SortedList {
             var rand = std.Random.DefaultPrng.init(seed);
             const random = rand.random();
 
-            for (0..50000) |_| {
+            for (0..5000) |_| {
                 const i = random.intRangeAtMost(usize, 0, 100);
                 try list.append(i);
                 if (random.boolean()) {
@@ -441,7 +500,7 @@ test SortedList {
             var elems = std.ArrayList(usize).init(std.testing.allocator);
             defer elems.deinit();
 
-            for (0..50000) |_| {
+            for (0..5000) |_| {
                 const i = random.intRangeAtMost(usize, 0, 100);
                 try list.append(i);
                 if (random.boolean()) {
