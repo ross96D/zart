@@ -22,7 +22,7 @@ const assert = std.debug.assert;
 
 pub fn Pool(T: type) type {
     const ITEM_SIZE = @sizeOf(T);
-    const BLOCK_SIZE = 512;
+    const BLOCK_SIZE = 10000;
     return struct {
         const Self = @This();
 
@@ -319,7 +319,7 @@ test "bench" {
             num2: usize,
         },
     };
-
+    const LOOPS = 1000000;
     var timer = try std.time.Timer.start();
     {
         timer.reset();
@@ -331,7 +331,7 @@ test "bench" {
 
         var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
         defer elems.deinit();
-        for (0..150000) |_| {
+        for (0..LOOPS) |_| {
             const s = try p.create();
             s.num = 1;
             s.some.num1 = 2;
@@ -358,7 +358,7 @@ test "bench" {
 
         var elems = std.ArrayList(*MyStruct).init(std.testing.allocator);
         defer elems.deinit();
-        for (0..150000) |_| {
+        for (0..LOOPS) |_| {
             const s = try allocator.create(MyStruct);
             s.num = 1;
             s.some.num1 = 2;
