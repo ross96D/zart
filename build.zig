@@ -31,20 +31,43 @@ pub fn build(b: *std.Build) void {
     // add check compile step
     check(b, b.step("check", "fast check compile"), .{ .target = target, .optimize = optimize });
     tests(b, target, optimize);
+    bench(b, target);
+}
 
-    const bench = b.addExecutable(.{
-        .name = "bench",
+fn bench(b: *std.Build, target: std.Build.ResolvedTarget) void {
+    const build_opts = b.addOptions();
+    const hashopt = b.option(bool, "hashmap", "compile benchmark with hashmap") orelse false;
+    const artopt = b.option(bool, "art", "compile benchmark with adaptive radix tree") orelse false;
+
+    const name = if (!hashopt and !artopt) r: {
+        build_opts.addOption(bool, "hashmap", true);
+        build_opts.addOption(bool, "art", true);
+        break :r "bench";
+    } else r: {
+        build_opts.addOption(bool, "hashmap", hashopt);
+        build_opts.addOption(bool, "art", artopt);
+        if (hashopt) {
+            break :r "bench_hash";
+        } else {
+            break :r "bench_art";
+        }
+    };
+
+    const bench_compile = b.addExecutable(.{
+        .name = name,
         .root_source_file = b.path("src/bench.zig"),
         .optimize = .ReleaseFast,
         .target = target,
     });
-    b.installArtifact(bench);
-    const bench_run = b.addRunArtifact(bench);
+    bench_compile.root_module.addOptions("build_opts", build_opts);
+
+    b.installArtifact(bench_compile);
+    const bench_run = b.addRunArtifact(bench_compile);
     const bench_step = b.step("bench", "Bench against std.StringHashMap()");
     bench_step.dependOn(&bench_run.step);
 
     const bench_build_step = b.step("bench:build", "Bench against std.StringHashMap()");
-    bench_build_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
+    bench_build_step.dependOn(&b.addInstallArtifact(bench_compile, .{}).step);
 }
 
 /// fast compile check for easy development

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const art = @import("zart.zig");
 const Art = art.Tree;
 const art_test = art;
+const build_opts = @import("build_opts");
 
 const bench_log = if (std.debug.runtime_safety) std.debug.print else std.log.info;
 
@@ -136,7 +137,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    {
+    if (build_opts.hashmap) {
         var debug_alloc = std.testing.FailingAllocator.init(allocator, .{});
 
         const Map = std.StringHashMap(usize);
@@ -148,7 +149,7 @@ pub fn main() !void {
         std.debug.print("\nStringHashMap allocator stats {s}", .{debug_allocator_stats(debug_alloc)});
     }
 
-    {
+    if (build_opts.art) {
         var debug_alloc = std.testing.FailingAllocator.init(allocator, .{});
 
         const T = Art(usize);
