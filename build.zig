@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
 
     // add check compile step
     check(b, b.step("check", "fast check compile"), .{ .target = target, .optimize = optimize });
-    tests(b, b.step("test", "run unit test"), b.step("test:build", "build unit test"), .{ .target = target, .optimize = optimize });
+    tests(b, target, optimize);
 
     const bench = b.addExecutable(.{
         .name = "bench",
@@ -69,29 +69,47 @@ fn check(b: *std.Build, step_check: *std.Build.Step, opts: struct {
 
 fn tests(
     b: *std.Build,
-    run_test_step: *std.Build.Step,
-    build_test_step: *std.Build.Step,
-    opts: struct {
-        target: std.Build.ResolvedTarget,
-        optimize: std.builtin.OptimizeMode,
-    },
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
 ) void {
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
     const test_filters = b.option([]const []const u8, "test-filter", "Only run test that match the filter");
-    const lib_unit_tests = b.addTest(.{
-        .name = "test",
-        .root_source_file = b.path("src/pool_allocator.zig"),
-        .test_runner = b.path("test_runner.zig"),
-        .target = opts.target,
-        .optimize = opts.optimize,
-    });
-    if (test_filters) |filters| {
-        lib_unit_tests.filters = filters;
+    { // build test for pool
+        const run_test_step = b.step("test:pool", "run pool allocator unit test");
+        const build_test_step = b.step("test:pool:build", "build pool allocator unit test");
+        const lib_unit_tests = b.addTest(.{
+            .name = "test_pool",
+            .root_source_file = b.path("src/pool_allocator.zig"),
+            .test_runner = b.path("test_runner.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        if (test_filters) |filters| {
+            lib_unit_tests.filters = filters;
+        }
+        const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+
+        run_test_step.dependOn(&run_lib_unit_tests.step);
+
+        build_test_step.dependOn(&b.addInstallArtifact(lib_unit_tests, .{}).step);
     }
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    run_test_step.dependOn(&run_lib_unit_tests.step);
+    { // build test for pool
+        const run_test_step = b.step("test", "run radix tree unit test");
+        const build_test_step = b.step("test:build", "build radix tree unit test");
+        const lib_unit_tests = b.addTest(.{
+            .name = "test_pool",
+            .root_source_file = b.path("src/zart.zig"),
+            .test_runner = b.path("test_runner.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        if (test_filters) |filters| {
+            lib_unit_tests.filters = filters;
+        }
+        const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    build_test_step.dependOn(&b.addInstallArtifact(lib_unit_tests, .{}).step);
+        run_test_step.dependOn(&run_lib_unit_tests.step);
+
+        build_test_step.dependOn(&b.addInstallArtifact(lib_unit_tests, .{}).step);
+    }
 }
