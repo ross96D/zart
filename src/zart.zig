@@ -13,6 +13,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
+const pool_allocator = @import("pool_allocator.zig");
+const Pool = pool_allocator.Pool;
+
 fn _fassert(ok: bool, comptime fmt: []const u8, args: anytype) void {
     if (!ok) {
         std.debug.print(fmt ++ "\n", args);
@@ -27,6 +30,8 @@ const assert: fn (bool) void = if (builtin.mode == .ReleaseFast) _no_assert else
 pub fn Tree(comptime T: type) type {
     return struct {
         const ARTree = @This();
+        const NodePool = Pool(Node, .{});
+        const LeafPool = Pool(Leaf, .{});
 
         pub const Node = struct {
             /// List of bytes to be used on path compression (Pesimistic approach)
@@ -142,8 +147,8 @@ pub fn Tree(comptime T: type) type {
             },
 
             /// creates an empty and ready to use node
-            fn new(allocator: mem.Allocator, t: type) *Node {
-                const new_node = allocator.create(Node) catch unreachable;
+            fn new(pool: *NodePool, t: type) *Node {
+                const new_node = pool.create() catch unreachable;
                 new_node.* = Node{
                     .node = switch (t) {
                         Node3 => .{ .node3 = Node3{} },
@@ -166,12 +171,12 @@ pub fn Tree(comptime T: type) type {
             ///
             /// node_with_compressed_path can consist of several nodes because the max size of
             /// a single compressed path is `Partial.PARTIAL_SIZE`
-            fn new_leaf(allocator: mem.Allocator, _prefix: []const u8, value: T) *Node {
+            fn new_leaf(node_pool: *NodePool, leaf_pool: *LeafPool, _prefix: []const u8, value: T) *Node {
                 var prefix = _prefix;
-                var new_node = allocator.create(Node) catch unreachable;
+                var new_node = node_pool.create() catch unreachable;
                 new_node.* = Node{
                     .node = .{ .partial = Partial{} },
-                    .leaf = Leaf.new(allocator, value),
+                    .leaf = Leaf.new(leaf_pool, value),
                 };
                 while (prefix.len > 0) {
                     // if the prefix is larger than what partial can contain
@@ -183,7 +188,7 @@ pub fn Tree(comptime T: type) type {
                         new_node.node.partial.set_prefix(prefix[start..end]);
                         prefix = prefix[0..start];
 
-                        const node = allocator.create(Node) catch unreachable;
+                        const node = node_pool.create() catch unreachable;
                         node.* = Node{ .node = .{ .partial = Partial{} } };
                         node.append(prefix[prefix.len - 1], new_node);
 
@@ -206,21 +211,24 @@ pub fn Tree(comptime T: type) type {
                     .node48 => self.node.node48.deinit(allocator),
                     .node256 => self.node.node256.deinit(allocator),
                 }
-                self.destroy(allocator, true);
-            }
 
-            /// free the memory of this node but do not free the childs
-            fn destroy(self: *Node, allocator: mem.Allocator, _leaf: bool) void {
-                if (self.leaf != null and _leaf) {
-                    allocator.destroy(self.leaf.?);
-                }
                 switch (self.node) {
                     .node16 => |v| allocator.destroy(v),
                     .node48 => |v| allocator.destroy(v),
                     .node256 => |v| allocator.destroy(v),
                     else => {},
                 }
-                allocator.destroy(self);
+            }
+
+            /// free the memory of this node but do not free the childs
+            fn destroy(self: *Node, pool: *NodePool, allocator: mem.Allocator) void {
+                switch (self.node) {
+                    .node16 => |v| allocator.destroy(v),
+                    .node48 => |v| allocator.destroy(v),
+                    .node256 => |v| allocator.destroy(v),
+                    else => {},
+                }
+                pool.destroy(self);
             }
 
             pub inline fn prefix_len(self: Node) u8 {
@@ -342,7 +350,7 @@ pub fn Tree(comptime T: type) type {
                 };
             }
 
-            fn merge_if_possible(self: *Node, allocator: mem.Allocator) void {
+            fn merge_if_possible(self: *Node, pool: *NodePool, allocator: mem.Allocator) void {
                 if (self.childs() != 1) {
                     return;
                 }
@@ -360,14 +368,14 @@ pub fn Tree(comptime T: type) type {
                 }
                 if (self.node == .node3) self.node = .{ .partial = self.node.node3.demote() };
                 assert(self.node == .partial);
-                self.merge(allocator);
+                self.merge(pool, allocator);
             }
 
             /// Can merge only if:
             /// - only if self.leaf is null
             /// - only if parent node has 1 child and the child node also have 1 child or 0
             /// the nodes can be merge
-            fn merge(self: *Node, allocator: mem.Allocator) void {
+            fn merge(self: *Node, pool: *NodePool, allocator: mem.Allocator) void {
                 assert(self.childs() == 1);
                 assert(self.node == .partial);
                 assert(self.leaf == null);
@@ -386,18 +394,18 @@ pub fn Tree(comptime T: type) type {
                     self.leaf = leaf;
                 }
                 self.node.partial.node1 = child.node.partial.node1;
-                child.destroy(allocator, false);
+                child.destroy(pool, allocator);
             }
 
-            fn remove_leaf(self: *Node, allocator: mem.Allocator) T {
+            fn remove_leaf(self: *Node, node_pool: *NodePool, leaf_pool: *LeafPool, allocator: mem.Allocator) T {
                 assert(self.leaf != null);
 
                 const v = self.leaf.?.value;
-                allocator.destroy(self.leaf.?);
+                leaf_pool.destroy(self.leaf.?);
                 self.leaf = null;
                 const num_childs = self.childs();
                 if (num_childs == 1) {
-                    self.merge_if_possible(allocator);
+                    self.merge_if_possible(node_pool, allocator);
                 }
                 return v;
             }
@@ -607,8 +615,8 @@ pub fn Tree(comptime T: type) type {
             partial: []const u8 = "",
             value: T,
 
-            fn new(allocator: mem.Allocator, value: T) *Leaf {
-                const resp = allocator.create(Leaf) catch unreachable;
+            fn new(pool: *LeafPool, value: T) *Leaf {
+                const resp = pool.create() catch unreachable;
                 resp.partial = "";
                 resp.value = value;
                 return resp;
@@ -622,20 +630,29 @@ pub fn Tree(comptime T: type) type {
 
         root: *Node,
         allocator: mem.Allocator,
+        node_pool: NodePool,
+        leaf_pool: LeafPool,
 
         pub fn init(allocator: mem.Allocator) ARTree {
-            var root = Node.new(allocator, Node3);
+            var node_pool = NodePool.init(allocator);
+            const leaf_pool = LeafPool.init(allocator);
+
+            var root = Node.new(&node_pool, Node3);
             const node256 = allocator.create(Node256) catch unreachable;
             node256.* = Node256{};
             root.node = .{ .node256 = node256 };
             return ARTree{
                 .allocator = allocator,
                 .root = root,
+                .node_pool = node_pool,
+                .leaf_pool = leaf_pool,
             };
         }
 
-        pub fn deinit(self: ARTree) void {
+        pub fn deinit(self: *ARTree) void {
             self.root.deinit(self.allocator);
+            self.node_pool.deinit();
+            self.leaf_pool.deinit();
         }
 
         pub fn get(self: *ARTree, key: []const u8) ?T {
@@ -686,7 +703,7 @@ pub fn Tree(comptime T: type) type {
                     if (eq == search.len) {
                         const label_node = prefix[eq];
                         // the key is a subset of the compressed path
-                        const new_node_leaf = Node.new_leaf(self.allocator, search, value);
+                        const new_node_leaf = Node.new_leaf(&self.node_pool, &self.leaf_pool, search, value);
                         assert(node.node == .partial);
 
                         node.node.partial.move_prefix_forwards(eq + 1);
@@ -696,7 +713,7 @@ pub fn Tree(comptime T: type) type {
                         // replace node in parent
                         parent.?.set(prev_search.?, new_node_leaf);
 
-                        node.merge_if_possible(self.allocator);
+                        node.merge_if_possible(&self.node_pool, self.allocator);
 
                         return null;
                     } else if (eq < search.len and eq != 0) {
@@ -707,11 +724,11 @@ pub fn Tree(comptime T: type) type {
                         const label_leaf = search[eq];
                         const label_node = prefix[eq];
 
-                        const new_node_parent = Node.new(self.allocator, Node.Partial);
+                        const new_node_parent = Node.new(&self.node_pool, Node.Partial);
                         new_node_parent.node.partial.set_prefix(parent_compressed_path);
 
-                        const intermadiate_node = Node.new(self.allocator, Node3);
-                        const new_leaf_node = Node.new_leaf(self.allocator, leaf_prefix, value);
+                        const intermadiate_node = Node.new(&self.node_pool, Node3);
+                        const new_leaf_node = Node.new_leaf(&self.node_pool, &self.leaf_pool, leaf_prefix, value);
 
                         new_node_parent.append(label_intermediate, intermadiate_node);
 
@@ -722,7 +739,7 @@ pub fn Tree(comptime T: type) type {
 
                         parent.?.set(prev_search.?, new_node_parent);
 
-                        node.merge_if_possible(self.allocator);
+                        node.merge_if_possible(&self.node_pool, self.allocator);
 
                         return null;
                     } else if (eq < search.len and eq == 0) {
@@ -731,8 +748,8 @@ pub fn Tree(comptime T: type) type {
                         const label_node = prefix[eq];
                         const label_leaf = search[eq];
 
-                        const new_node_parent = Node.new(self.allocator, Node3);
-                        const new_leaf_node = Node.new_leaf(self.allocator, leaf_prefix, value);
+                        const new_node_parent = Node.new(&self.node_pool, Node3);
+                        const new_leaf_node = Node.new_leaf(&self.node_pool, &self.leaf_pool, leaf_prefix, value);
 
                         new_node_parent.append(label_node, node);
                         new_node_parent.append(label_leaf, new_leaf_node);
@@ -741,7 +758,7 @@ pub fn Tree(comptime T: type) type {
 
                         parent.?.set(prev_search.?, new_node_parent);
 
-                        node.merge_if_possible(self.allocator);
+                        node.merge_if_possible(&self.node_pool, self.allocator);
 
                         return null;
                     } else unreachable;
@@ -754,7 +771,7 @@ pub fn Tree(comptime T: type) type {
                             response = leaf.value;
                             leaf.value = value;
                         } else {
-                            node.leaf = Leaf.new(self.allocator, value);
+                            node.leaf = Leaf.new(&self.leaf_pool, value);
                         }
                         return response;
                     } else {
@@ -771,7 +788,7 @@ pub fn Tree(comptime T: type) type {
                         // edge to the child (label: "3")
                         // child node (value1, prefix: "4")
                         const eql_set = node.node.partial.items[0..eq];
-                        const new_parent_node = Node.new_leaf(self.allocator, eql_set, value);
+                        const new_parent_node = Node.new_leaf(&self.node_pool, &self.leaf_pool, eql_set, value);
                         if (node.node.partial.items[eq..].len > 0) {
                             // set the current node to be child of the new parent
                             new_parent_node.append(node.node.partial.items[eq + 1], node);
@@ -803,13 +820,13 @@ pub fn Tree(comptime T: type) type {
                         .partial => {
                             if (!node.is_full()) {
                                 // partial has empty child so we just append the leaf
-                                const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                const new_node_leaf = Node.new_leaf(&self.node_pool, &self.leaf_pool, search[1..], value);
                                 node.append(search[0], new_node_leaf);
                                 return null;
                             }
                             if (node.node.partial.length == 0) {
                                 node.promote(self.allocator);
-                                const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                const new_node_leaf = Node.new_leaf(&self.node_pool, &self.leaf_pool, search[1..], value);
                                 node.append(search[0], new_node_leaf);
                                 return null;
                             } else {
@@ -822,7 +839,7 @@ pub fn Tree(comptime T: type) type {
 
                                 node.promote(self.allocator);
 
-                                const new_parent_node = Node.new(self.allocator, Node.Partial);
+                                const new_parent_node = Node.new(&self.node_pool, Node.Partial);
                                 // set all te complete previous prefix but ommits the last byte
                                 new_parent_node.node.partial.set_prefix(prefix_items[0 .. prefix_length - 1]);
                                 // swap nodes. `new_parent_node` is the child of the previous parent of `node`
@@ -830,7 +847,7 @@ pub fn Tree(comptime T: type) type {
                                 new_parent_node.append(prefix_items[prefix_length - 1], node);
                                 parent.?.set(prev_search.?, new_parent_node);
 
-                                const new_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                                const new_leaf = Node.new_leaf(&self.node_pool, &self.leaf_pool, search[1..], value);
                                 node.append(search[0], new_leaf);
                                 return null;
                             }
@@ -839,7 +856,7 @@ pub fn Tree(comptime T: type) type {
                             if (node.is_full()) {
                                 node.promote(self.allocator);
                             }
-                            const new_node_leaf = Node.new_leaf(self.allocator, search[1..], value);
+                            const new_node_leaf = Node.new_leaf(&self.node_pool, &self.leaf_pool, search[1..], value);
                             node.append(search[0], new_node_leaf);
                             return null;
                         },
@@ -851,7 +868,7 @@ pub fn Tree(comptime T: type) type {
                 response = leaf.value;
                 leaf.value = value;
             } else {
-                node.leaf = Leaf.new(self.allocator, value);
+                node.leaf = Leaf.new(&self.leaf_pool, value);
             }
             return response;
         }
@@ -865,8 +882,8 @@ pub fn Tree(comptime T: type) type {
             while (search.len != 0) {
                 if (node.leaf) |leaf| {
                     if (leaf.eql(search)) {
-                        const v = node.remove_leaf(self.allocator);
-                        parent.?.merge_if_possible(self.allocator);
+                        const v = node.remove_leaf(&self.node_pool, &self.leaf_pool, self.allocator);
+                        // ?? merge if possible is preform when removing the leaf // parent.?.merge_if_possible(&self.node_pool, self.allocator);
                         return v;
                     }
                 }
@@ -889,8 +906,8 @@ pub fn Tree(comptime T: type) type {
             }
             if (node.leaf) |leaf| {
                 if (leaf.eql(search)) {
-                    const v = node.remove_leaf(self.allocator);
-                    parent.?.merge_if_possible(self.allocator);
+                    const v = node.remove_leaf(&self.node_pool, &self.leaf_pool, self.allocator);
+                    // parent.?.merge_if_possible(&self.node_pool, self.allocator);
                     return v;
                 }
             }
@@ -1110,7 +1127,12 @@ test "promote" {
     var chacha = std.rand.ChaCha.init(seed);
     const rand = chacha.random();
 
-    var node = Z.Node.new(tal, Z.Node3);
+    var pool = Z.NodePool.init(tal);
+    defer pool.deinit();
+    var leaf_pool = Z.LeafPool.init(tal);
+    defer leaf_pool.deinit();
+
+    var node = Z.Node.new(&pool, Z.Node3);
     defer node.deinit(tal);
     const entry = struct {
         key: u8,
@@ -1119,7 +1141,7 @@ test "promote" {
     var entries: [256]entry = undefined;
     for (0..256) |i| {
         entries[i].key = @intCast(i);
-        entries[i].node = Z.Node.new_leaf(tal, "", rand.int(usize));
+        entries[i].node = Z.Node.new_leaf(&pool, &leaf_pool, "", rand.int(usize));
     }
     for (entries, 0..) |e, i| {
         if (i == Z.Node3.NUM or i == 16 or i == 48) {
@@ -1161,15 +1183,23 @@ test "promote" {
 
 test "new_leaf" {
     {
-        const n = Tree(usize).Node.new_leaf(tal, "key", 1);
+        var pool = Tree(usize).NodePool.init(tal);
+        defer pool.deinit();
+        var leaf_pool = Tree(usize).LeafPool.init(tal);
+        defer leaf_pool.deinit();
+        const n = Tree(usize).Node.new_leaf(&pool, &leaf_pool, "key", 1);
         defer n.deinit(tal);
         try std.testing.expect(n.leaf != null);
         try std.testing.expectEqual(n.leaf.?.value, 1);
     }
     {
+        var pool = Tree(usize).NodePool.init(tal);
+        defer pool.deinit();
+        var leaf_pool = Tree(usize).LeafPool.init(tal);
+        defer leaf_pool.deinit();
         const base = [5]u8{ 'l', 'a', 'r', 'g', 'e' };
         const key: []const u8 = &(base ** 4);
-        const n = Tree(usize).Node.new_leaf(tal, key, 1);
+        const n = Tree(usize).Node.new_leaf(&pool, &leaf_pool, key, 1);
         defer n.deinit(tal);
         try std.testing.expect(n.leaf == null);
         const child = n.node.partial.node1.ptr.?;
@@ -1184,12 +1214,17 @@ test "new_leaf" {
 
 test "Node16" {
     const Z = Tree(usize);
+    var pool = Z.NodePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var leaf_pool = Z.LeafPool.init(std.testing.allocator);
+    defer leaf_pool.deinit();
+
     var n = Z.Node16{};
-    const a = Z.Node.new_leaf(std.testing.allocator, "", 1);
+    const a = Z.Node.new_leaf(&pool, &leaf_pool, "", 1);
     defer a.deinit(std.testing.allocator);
-    const b = Z.Node.new_leaf(std.testing.allocator, "", 2);
+    const b = Z.Node.new_leaf(&pool, &leaf_pool, "", 2);
     defer b.deinit(std.testing.allocator);
-    const c = Z.Node.new_leaf(std.testing.allocator, "", 3);
+    const c = Z.Node.new_leaf(&pool, &leaf_pool, "", 3);
     defer c.deinit(std.testing.allocator);
 
     n.append('a', a);

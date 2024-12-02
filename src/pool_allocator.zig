@@ -18,7 +18,7 @@ const Allocator = std.mem.Allocator;
 const Error = Allocator.Error;
 const assert = std.debug.assert;
 
-const PoolConfig = struct {
+pub const PoolConfig = struct {
     block_size: usize = 4086,
 };
 
