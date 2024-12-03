@@ -53,10 +53,11 @@ fn bench(b: *std.Build, target: std.Build.ResolvedTarget) void {
         }
     };
 
+    const bench_debug = b.option(bool, "bench-debug", "compile bench with debug") orelse false;
     const bench_compile = b.addExecutable(.{
         .name = name,
         .root_source_file = b.path("src/bench.zig"),
-        .optimize = .ReleaseFast,
+        .optimize = if (bench_debug) .Debug else .ReleaseFast,
         .target = target,
     });
     bench_compile.root_module.addOptions("build_opts", build_opts);
@@ -83,7 +84,7 @@ fn check(b: *std.Build, step_check: *std.Build.Step, opts: struct {
     step_check.dependOn(&lib.step);
 
     const pool_lib = b.addTest(.{
-        .root_source_file = b.path("src/pool_allocator.zig"),
+        .root_source_file = b.path("src/mem_pool.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
@@ -101,7 +102,7 @@ fn tests(
         const build_test_step = b.step("test:pool:build", "build pool allocator unit test");
         const lib_unit_tests = b.addTest(.{
             .name = "test_pool",
-            .root_source_file = b.path("src/pool_allocator.zig"),
+            .root_source_file = b.path("src/mem_pool.zig"),
             .test_runner = b.path("test_runner.zig"),
             .target = target,
             .optimize = optimize,

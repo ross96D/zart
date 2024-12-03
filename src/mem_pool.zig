@@ -14,6 +14,7 @@
 //!     the list of block pointers
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Error = Allocator.Error;
 const assert = std.debug.assert;
@@ -161,6 +162,68 @@ pub fn Pool(T: type, config: PoolConfig) type {
             }
         };
 
+        /// Used in debug only
+        const AllocationStat = struct {
+            blocks_allocated: usize = 0,
+            /// blocks freed by destroy, does not count when deinit is called
+            blocks_free: usize = 0,
+            bytes_allocated: usize = 0,
+            /// bytes freed by destroy, does not count when deinit is called
+            bytes_free: usize = 0,
+
+            reused_items: usize = 0,
+            call_creates: usize = 0,
+            call_destroys: usize = 0,
+
+            inline fn create_block(self: *AllocationStat) void {
+                self.blocks_allocated += 1;
+                self.bytes_allocated += BLOCK_SIZE * ITEM_SIZE;
+            }
+            inline fn destroy_block(self: *AllocationStat) void {
+                self.blocks_free += 1;
+                self.bytes_free += BLOCK_SIZE * ITEM_SIZE;
+            }
+            inline fn reuse_item(self: *AllocationStat) void {
+                self.reused_items += 1;
+            }
+            inline fn call_create(self: *AllocationStat) void {
+                self.call_creates += 1;
+            }
+            inline fn call_destroy(self: *AllocationStat) void {
+                self.call_destroys += 1;
+            }
+            pub inline fn string(self: AllocationStat) ![]const u8 {
+                var buffer: [500]u8 = undefined;
+                const fmt =
+                    \\blocks_allocated  {d}
+                    \\blocks_free       {d}
+                    \\bytes_allocated   {d}
+                    \\bytes_free        {d}
+                    \\reused_items      {d}
+                    \\call_creates      {d}
+                    \\call_destroys     {d}
+                    \\
+                ;
+                return try std.fmt.bufPrint(&buffer, fmt, .{
+                    self.blocks_allocated, self.blocks_free,
+                    self.bytes_allocated,  self.bytes_free,
+                    self.reused_items,     self.call_creates,
+                    self.call_destroys,
+                });
+            }
+        };
+        const DummyAllocationStat = struct {
+            inline fn create_block(_: @This()) void {}
+            inline fn destroy_block(_: @This()) void {}
+            inline fn reuse_item(_: @This()) void {}
+            inline fn call_create(_: @This()) void {}
+            inline fn call_destroy(_: @This()) void {}
+            pub inline fn string(_: @This()) ![]const u8 {
+                return "";
+            }
+        };
+        const DebugAllocationT = if (builtin.mode == .Debug) AllocationStat else DummyAllocationStat;
+
         const AllocatedList = SortedList(*Block, Block.order);
 
         allocator: Allocator,
@@ -171,6 +234,9 @@ pub fn Pool(T: type, config: PoolConfig) type {
 
         /// Cache the last allocated for fast create
         last_allocated: *Block = undefined,
+
+        /// this field save statistics about the allocations only in debug mode
+        allocation_stats: DebugAllocationT = .{},
 
         pub inline fn init(allocator: Allocator) Self {
             return Self{
@@ -189,6 +255,8 @@ pub fn Pool(T: type, config: PoolConfig) type {
         }
 
         fn new_block(self: *Self) Error!*Block {
+            self.allocation_stats.create_block();
+
             var block = try self.allocator.create(Block);
             block.reset();
             self.last_allocated = block;
@@ -197,11 +265,14 @@ pub fn Pool(T: type, config: PoolConfig) type {
         }
 
         pub fn create(self: *Self) Error!*T {
+            self.allocation_stats.call_create();
+
             if (self.allocated_list.len() == 0) {
                 var block = try self.new_block();
                 return block.next();
             }
             if (self.reusable_list.reuse(&self.allocated_list)) |elem| {
+                self.allocation_stats.reuse_item();
                 return elem;
             }
             if (!self.last_allocated.is_full()) {
@@ -212,6 +283,8 @@ pub fn Pool(T: type, config: PoolConfig) type {
         }
 
         pub fn destroy(self: *Self, item: *T) void {
+            self.allocation_stats.call_destroy();
+
             var alloc_list_pos, const found = self.allocated_list.position_of(@ptrCast(item));
             if (!found) {
                 assert(alloc_list_pos > 0);
@@ -254,6 +327,7 @@ pub fn Pool(T: type, config: PoolConfig) type {
                 }
 
                 self.allocator.destroy(block);
+                self.allocation_stats.destroy_block();
                 return;
             }
             self.reusable_list.cache_last_free(reusable_block_index);
@@ -474,6 +548,7 @@ test "bench" {
         const s = _timer.read();
         const t = timer.read();
         std.debug.print("Pool {}ms ins {}ms del {}ms\n", .{ t / 1000000, d / 1000000, s / 1000000 });
+        std.debug.print("{s}", .{try p.allocation_stats.string()});
     }
 }
 

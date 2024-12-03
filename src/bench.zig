@@ -14,6 +14,9 @@ const LevelsCollector = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{ .levels = std.ArrayList(usize).init(allocator) };
     }
+    pub fn deinit(self: LevelsCollector) void {
+        self.levels.deinit();
+    }
 
     pub fn print_statistics(self: Self) void {
         var total: usize = 0;
@@ -64,6 +67,7 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
     {
         const f = try std.fs.openFileAbsolute("/proc/self/status", .{});
         const data = try f.readToEndAlloc(a, 1 << 31);
+        defer a.free(data);
         if (@TypeOf(container) == *Art(usize)) {
             std.debug.print("\nArt memory\n{s}\n\n", .{parseStatus(data)});
         } else {
@@ -93,6 +97,7 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
         var t = @as(*Art(usize), container);
 
         var collector = LevelsCollector.init(a);
+        defer collector.deinit();
         t.for_each(&collector, LevelsCollector.for_each_yield);
         collector.print_statistics();
     } else {
@@ -160,6 +165,7 @@ pub fn main() !void {
         try bench(allocator, &t, T.set, T.get, T.delete);
 
         std.debug.print("\nArt allocator stats {s}\n", .{debug_allocator_stats(debug_alloc)});
+        try t.print_pool_stats();
     }
 }
 

@@ -1,8 +1,6 @@
 // TODO we could get nasty with the leaf, the current implementation allocates a new leaf, but..
 // TODO instead of allocating a new leaf we could allocate the node+leaf space and on the node is just a bit flag
 
-// TODO when the node have a partial value also always have 1 child. This special case should be take into consideration
-
 // This todo is after the first ones, because is tricky and we may not get performance improvement
 // TODO just treat all node on the union as ptrs. the trick is that node3 and partial (node1)
 // TODO will be next to the right. This would affect the leaf allocation too.
@@ -13,7 +11,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
-const pool_allocator = @import("pool_allocator.zig");
+const pool_allocator = @import("mem_pool.zig");
 const Pool = pool_allocator.Pool;
 
 fn _fassert(ok: bool, comptime fmt: []const u8, args: anytype) void {
@@ -925,6 +923,15 @@ pub fn Tree(comptime T: type) type {
 
         pub fn for_each(self: *const ARTree, context: anytype, fun: YieldFN(@TypeOf(context))) void {
             self.root.for_each(null, 0, context, fun);
+        }
+
+        pub fn print_pool_stats(self: *const ARTree) !void {
+            if (builtin.mode == .Debug) {
+                std.debug.print("Node pool\n{s}\nLeaf pool\n{s}", .{
+                    try self.node_pool.allocation_stats.string(),
+                    try self.leaf_pool.allocation_stats.string(),
+                });
+            }
         }
     };
 }
