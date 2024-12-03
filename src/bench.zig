@@ -1,3 +1,5 @@
+//! TODO refactor this benchmark
+
 const std = @import("std");
 const builtin = @import("builtin");
 const art = @import("zart.zig");
