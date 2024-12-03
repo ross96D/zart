@@ -274,7 +274,7 @@ pub fn Tree(comptime T: type) type {
                         var new_node = allocator.create(Node16) catch unreachable;
                         new_node.* = Node16{};
                         @memcpy(new_node.ptrs[0..Node3.NUM], v.ptrs[0..]);
-                        @memcpy(new_node.keys[0..Node3.NUM], v.keys[0..]);
+                        @memcpy(new_node.labels[0..Node3.NUM], v.labels[0..]);
                         new_node.childs = Node3.NUM;
                         self.node = .{ .node16 = new_node };
                     },
@@ -284,7 +284,7 @@ pub fn Tree(comptime T: type) type {
                         new_node.* = Node48{};
                         @memcpy(new_node.ptrs[0..16], v.ptrs[0..]);
                         // stores indexes of new_node.ptrs on the new_node.keys
-                        for (v.keys, 0..) |key, i| {
+                        for (v.labels, 0..) |key, i| {
                             new_node.idxs[key] = @intCast(i);
                         }
                         new_node.childs = 16;
@@ -413,7 +413,7 @@ pub fn Tree(comptime T: type) type {
         const Node3 = struct {
             const NUM = 3;
             /// key and ptr have matching positions
-            keys: [NUM]u8 = undefined,
+            labels: [NUM]u8 = undefined,
             ptrs: [NUM]?*Node = [1]?*Node{null} ** NUM,
             childs: u8 = 0,
 
@@ -425,13 +425,13 @@ pub fn Tree(comptime T: type) type {
 
             fn for_each(self: *const Node3, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.keys[i], level, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, ctx, fun);
                 }
             }
 
             fn get(self: *const Node3, label: u8) ?*Node {
                 for (0..self.childs) |i| {
-                    if (label == self.keys[i]) {
+                    if (label == self.labels[i]) {
                         return self.ptrs[i];
                     }
                 }
@@ -442,7 +442,7 @@ pub fn Tree(comptime T: type) type {
                 assert(self.get(label) != null);
 
                 for (0..self.childs) |i| {
-                    if (label == self.keys[i]) {
+                    if (label == self.labels[i]) {
                         self.ptrs[i] = child;
                         return;
                     }
@@ -454,7 +454,7 @@ pub fn Tree(comptime T: type) type {
                 assert(self.childs < NUM);
                 assert(self.get(label) == null);
 
-                self.keys[self.childs] = label;
+                self.labels[self.childs] = label;
                 self.ptrs[self.childs] = child;
                 self.childs += 1;
             }
@@ -468,7 +468,7 @@ pub fn Tree(comptime T: type) type {
                 assert(self.ptrs[0] != null);
                 return Node.Partial{
                     .node1 = .{
-                        .label = self.keys[0],
+                        .label = self.labels[0],
                         .ptr = self.ptrs[0].?,
                     },
                 };
@@ -476,7 +476,7 @@ pub fn Tree(comptime T: type) type {
         };
         const Node16 = struct {
             /// key and ptr have matching positions
-            keys: [16]u8 = undefined, // use simd comparison to find the key
+            labels: [16]u8 = undefined, // use simd comparison to find the key
             ptrs: [16]?*Node = [1]?*Node{null} ** 16,
             childs: u8 = 0,
 
@@ -488,12 +488,12 @@ pub fn Tree(comptime T: type) type {
 
             fn for_each(self: *const Node16, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.keys[i], level, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, ctx, fun);
                 }
             }
 
             fn get(self: *const Node16, label: u8) ?*Node {
-                const keyvec: @Vector(16, u8) = self.keys;
+                const keyvec: @Vector(16, u8) = self.labels;
                 const idx = std.simd.firstIndexOfValue(keyvec, label) orelse return null;
                 if (idx >= self.childs) {
                     return null;
@@ -504,7 +504,7 @@ pub fn Tree(comptime T: type) type {
             fn set(self: *Node16, label: u8, child: *Node) void {
                 assert(self.get(label) != null);
 
-                const keyvec: @Vector(16, u8) = self.keys;
+                const keyvec: @Vector(16, u8) = self.labels;
                 const idx = std.simd.firstIndexOfValue(keyvec, label) orelse unreachable;
                 assert(idx < self.childs);
                 self.ptrs[idx] = child;
@@ -514,7 +514,7 @@ pub fn Tree(comptime T: type) type {
                 assert(self.childs < 16);
                 assert(self.get(label) == null);
 
-                self.keys[self.childs] = label;
+                self.labels[self.childs] = label;
                 self.ptrs[self.childs] = child;
                 self.childs += 1;
             }
