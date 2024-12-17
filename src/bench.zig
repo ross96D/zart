@@ -6,6 +6,7 @@ const art = @import("zart.zig");
 const Art = art.Tree;
 const art_test = art;
 const build_opts = @import("build_opts");
+const stats = @import("utils.zig").stats;
 
 const bench_log = if (std.debug.runtime_safety) std.debug.print else std.log.info;
 
@@ -67,13 +68,12 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
     const t1 = timer.read();
 
     {
-        const f = try std.fs.openFileAbsolute("/proc/self/status", .{});
-        const data = try f.readToEndAlloc(a, 1 << 31);
+        const data = stats(a);
         defer a.free(data);
         if (@TypeOf(container) == *Art(usize)) {
-            std.debug.print("\nArt memory\n{s}\n\n", .{parseStatus(data)});
+            std.debug.print("\nArt memory\n{s}\n\n", .{data});
         } else {
-            std.debug.print("\nStringHashMap memory\n{s}\n\n", .{parseStatus(data)});
+            std.debug.print("\nStringHashMap memory\n{s}\n\n", .{data});
         }
     }
 

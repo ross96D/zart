@@ -458,6 +458,8 @@ fn SortedList(T: type, compare: fn (T, T) std.math.Order) type {
 }
 
 test "bench" {
+    const stats = @import("utils.zig").stats;
+
     const MyStruct = struct {
         num: usize,
         some: struct {
@@ -482,16 +484,20 @@ test "bench" {
         _timer.reset();
         for (0..LOOPS) |i| {
             const s = try allocator.create(MyStruct);
-            if (i % 3 == 0) {
-                allocator.destroy(s);
-            } else {
-                s.num = 1;
-                s.some.num1 = 2;
-                s.some.num2 = 3;
-                try elems.append(s);
-            }
+            _ = i;
+            // if (i % 3 == 0) {
+            // allocator.destroy(s);
+            // } else {
+            s.num = 1;
+            s.some.num1 = 2;
+            s.some.num2 = 3;
+            try elems.append(s);
+            // }
         }
         const d = _timer.lap();
+
+        const inf = stats(allocator);
+        defer allocator.free(inf);
 
         _timer = try std.time.Timer.start();
 
@@ -507,6 +513,8 @@ test "bench" {
         const s = _timer.read();
         const t = timer.read();
         std.debug.print("GPA  {}ms ins {}ms del {}ms\n", .{ t / 1000000, d / 1000000, s / 1000000 });
+
+        std.debug.print("ads\n{s}\n\n", .{inf});
     }
 
     {
@@ -524,16 +532,22 @@ test "bench" {
         _timer.reset();
         for (0..LOOPS) |i| {
             const s = try p.create();
-            if (i % 3 == 0) {
-                p.destroy(s);
-            } else {
-                s.num = 1;
-                s.some.num1 = 2;
-                s.some.num2 = 3;
-                try elems.append(s);
-            }
+            _ = i;
+            // if (i % 3 == 0) {
+            // p.destroy(s);
+            // } else {
+            s.num = 1;
+            s.some.num1 = 2;
+            s.some.num2 = 3;
+            try elems.append(s);
+            // }
         }
         const d = _timer.lap();
+
+        const inf = stats(std.testing.allocator);
+        defer std.testing.allocator.free(inf);
+        std.debug.print("\n\nallocated_list size in bytes {d}\n", .{p.allocated_list.values.capacity * @sizeOf(*Pool(MyStruct, .{}).Block)});
+        std.debug.print("reusable_list size in bytes {d}\n\n", .{p.reusable_list.blocks.values.capacity * @sizeOf(*Pool(MyStruct, .{}).BlockReusableItems)});
 
         _timer = try std.time.Timer.start();
         var i = elems.items.len;
@@ -548,7 +562,9 @@ test "bench" {
         const s = _timer.read();
         const t = timer.read();
         std.debug.print("Pool {}ms ins {}ms del {}ms\n", .{ t / 1000000, d / 1000000, s / 1000000 });
-        std.debug.print("{s}", .{try p.allocation_stats.string()});
+        std.debug.print("ads\n{s}\n", .{inf});
+
+        std.debug.print("{s}\n", .{try p.allocation_stats.string()});
     }
 }
 
