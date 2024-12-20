@@ -54,9 +54,9 @@ pub fn Tree(comptime T: type) type {
                     }
                 }
 
-                fn for_each(self: *const Partial, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+                fn for_each(self: *const Partial, level: usize, key_size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                     if (self.node1.ptr) |node| {
-                        node.for_each(self.node1.label, level, ctx, fun);
+                        node.for_each(self.node1.label, level, key_size + self.length, ctx, fun);
                     }
                 }
 
@@ -318,10 +318,22 @@ pub fn Tree(comptime T: type) type {
                 };
             }
 
-            inline fn for_each(self: *const Node, label: ?u8, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
-                fun(self, label, level, ctx);
+            inline fn start_for_each(self: *const Node, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 switch (self.node) {
-                    inline else => |v| v.for_each(level + 1, ctx, fun),
+                    inline else => |v| v.for_each(1, 1, ctx, fun),
+                }
+            }
+            inline fn for_each(
+                self: *const Node,
+                label: u8,
+                level: usize,
+                key_size: usize,
+                ctx: anytype,
+                fun: FnYield(@TypeOf(ctx)),
+            ) void {
+                fun(self, label, level, key_size, ctx);
+                switch (self.node) {
+                    inline else => |v| v.for_each(level + 1, key_size + 1, ctx, fun),
                 }
             }
 
@@ -421,9 +433,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node3, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node3, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
                 }
             }
 
@@ -484,9 +496,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node16, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node16, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
                 }
             }
 
@@ -533,10 +545,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node48, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node48, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
                     const label = std.mem.indexOf(u8, &self.idxs, &[_]u8{@intCast(i)});
-                    self.ptrs[i].?.for_each(@intCast(label.?), level, ctx, fun);
+                    self.ptrs[i].?.for_each(@intCast(label.?), level, size, ctx, fun);
                 }
             }
 
@@ -578,10 +590,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node256, level: usize, ctx: anytype, fun: YieldFN(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node256, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (self.idxs, 0..) |node, i| {
                     if (node) |n| {
-                        n.for_each(@intCast(i), level, ctx, fun);
+                        n.for_each(@intCast(i), level, size, ctx, fun);
                     }
                 }
             }
@@ -917,12 +929,64 @@ pub fn Tree(comptime T: type) type {
             value: T,
         };
 
-        pub fn YieldFN(CtxT: type) type {
-            return fn (node: *const Node, label: ?u8, level: usize, context: CtxT) void;
+        pub fn FnYield(CtxT: type) type {
+            return fn (
+                node: *const Node,
+                label: u8,
+                level: usize,
+                key_size: usize,
+                context: CtxT,
+            ) void;
         }
 
-        pub fn for_each(self: *const ARTree, context: anytype, fun: YieldFN(@TypeOf(context))) void {
-            self.root.for_each(null, 0, context, fun);
+        pub fn for_each(self: *const ARTree, context: anytype, fun: FnYield(@TypeOf(context))) void {
+            self.root.start_for_each(context, fun);
+        }
+
+        pub fn FnYieldKey(CtxT: type) type {
+            return fn (
+                node: *const Node,
+                key: []const u8,
+                level: usize,
+                Key_size: usize,
+                context: CtxT,
+            ) void;
+        }
+
+        pub fn for_each_with_key(
+            self: *const ARTree,
+            allocator: mem.Allocator,
+            context: anytype,
+            fun: FnYieldKey(@TypeOf(context)),
+        ) !void {
+            const List = std.ArrayList(u8);
+            var list = try List.initCapacity(allocator, 64);
+            defer list.deinit();
+
+            const ctx_t = struct {
+                list: *List,
+                parent: @TypeOf(context),
+            };
+            var ctx_v: ctx_t = .{ .list = &list, .parent = context };
+
+            const fun_inner = struct {
+                fn f(node: *const Node, label: u8, level: usize, key_size: usize, ctx: *ctx_t) void {
+                    assert(level != 0);
+                    assert(key_size != 0);
+
+                    ctx.list.ensureTotalCapacity(key_size + node.prefix_len()) catch unreachable;
+                    const items = ctx.list.allocatedSlice();
+                    const index = key_size - 1;
+                    items[index] = label;
+                    if (node.prefix_len() > 0) {
+                        const prefix = node.node.partial.slice();
+                        // items[level] = node.node.partial.node1.label;
+                        @memcpy(items[key_size .. key_size + prefix.len], prefix);
+                    }
+                    fun(node, items[0 .. key_size + node.prefix_len()], level, key_size, ctx.parent);
+                }
+            }.f;
+            self.for_each(&ctx_v, fun_inner);
         }
 
         pub fn print_pool_stats(self: *const ARTree) !void {
@@ -1068,20 +1132,45 @@ const doSearch = struct {
     fn func(line: [:0]const u8, linei: usize, container: anytype, _: anytype, comptime T: type) anyerror!void {
         const v = container.get(line);
         try std.testing.expectEqual(v, valAsType(T, linei));
-        // try std.testing.expect(result == .missing);
     }
 }.func;
 
 test "insert many keys" {
     var lines = try readFileLines(tal, "./testdata/words.txt");
     defer deinitLines(tal, &lines);
+    var map = std.StringHashMap(usize).init(tal);
+    defer map.deinit();
+    for (lines.items, 0..) |item, i| {
+        try map.put(item, i + 1);
+    }
     inline for (ValueTypes) |T| {
         var t = Tree(T).init(tal);
         defer t.deinit();
-        const _lines = try eachLineDo(doInsert, lines, &t, null, T);
-        _ = _lines;
+        _ = try eachLineDo(doInsert, lines, &t, null, T);
         _ = try eachLineDo(doSearch, lines, &t, null, T);
-        // try std.testing.expectEqual(t.size, _lines);
+
+        var count: usize = 0;
+        const ctx_t = struct {
+            count: *usize,
+            lines: @TypeOf(map),
+        };
+        const ctx_v = ctx_t{ .count = &count, .lines = map };
+        const fun = struct {
+            fn f(node: *const Tree(T).Node, key: []const u8, _: usize, _: usize, context: ctx_t) void {
+                if (node.leaf) |leaf| {
+                    context.count.* += 1;
+
+                    if (context.lines.get(key)) |val| {
+                        std.testing.expectEqual(valAsType(T, val), leaf.value) catch unreachable;
+                    } else {
+                        std.debug.print("key: {s} value: {?} not found\n", .{ key, leaf.value });
+                        assert(false);
+                    }
+                }
+            }
+        }.f;
+        try t.for_each_with_key(tal, ctx_v, fun);
+        try std.testing.expectEqual(lines.items.len, count);
     }
 }
 

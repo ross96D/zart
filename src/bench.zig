@@ -40,7 +40,7 @@ const LevelsCollector = struct {
         std.debug.print("avg: {d} max: {d} min: {d}\n\n", .{ avg, max, min });
     }
 
-    fn for_each_yield(node: *const Art(usize).Node, label: ?u8, level: usize, self: *Self) void {
+    fn for_each_yield(node: *const Art(usize).Node, label: u8, level: usize, _: usize, self: *Self) void {
         _ = label;
         if (node.leaf) |_| {
             self.levels.append(level) catch unreachable;
