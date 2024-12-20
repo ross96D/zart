@@ -331,7 +331,9 @@ pub fn Tree(comptime T: type) type {
                 ctx: anytype,
                 fun: FnYield(@TypeOf(ctx)),
             ) void {
-                fun(self, label, level, key_size, ctx);
+                if (!(fun(self, label, level, key_size, ctx) catch false)) {
+                    return;
+                }
                 switch (self.node) {
                     inline else => |v| v.for_each(level + 1, key_size + 1, ctx, fun),
                 }
@@ -936,7 +938,7 @@ pub fn Tree(comptime T: type) type {
                 level: usize,
                 key_size: usize,
                 context: CtxT,
-            ) void;
+            ) anyerror!bool;
         }
 
         pub fn for_each(self: *const ARTree, context: anytype, fun: FnYield(@TypeOf(context))) void {
@@ -950,7 +952,7 @@ pub fn Tree(comptime T: type) type {
                 level: usize,
                 Key_size: usize,
                 context: CtxT,
-            ) void;
+            ) anyerror!bool;
         }
 
         pub fn for_each_with_key(
@@ -970,7 +972,7 @@ pub fn Tree(comptime T: type) type {
             var ctx_v: ctx_t = .{ .list = &list, .parent = context };
 
             const fun_inner = struct {
-                fn f(node: *const Node, label: u8, level: usize, key_size: usize, ctx: *ctx_t) void {
+                fn f(node: *const Node, label: u8, level: usize, key_size: usize, ctx: *ctx_t) !bool {
                     assert(level != 0);
                     assert(key_size != 0);
 
@@ -983,7 +985,7 @@ pub fn Tree(comptime T: type) type {
                         // items[level] = node.node.partial.node1.label;
                         @memcpy(items[key_size .. key_size + prefix.len], prefix);
                     }
-                    fun(node, items[0 .. key_size + node.prefix_len()], level, key_size, ctx.parent);
+                    return fun(node, items[0 .. key_size + node.prefix_len()], level, key_size, ctx.parent);
                 }
             }.f;
             self.for_each(&ctx_v, fun_inner);
@@ -1082,6 +1084,25 @@ test "basic" {
         try std.testing.expectEqual(rs1, 1);
         try std.testing.expectEqual(rs2, 2);
         try std.testing.expectEqual(rs3, 3);
+        {
+            const ctx_t = struct { count: *usize };
+            var count: usize = 0;
+            const ctx_v = ctx_t{ .count = &count };
+            const fun = struct {
+                fn f(
+                    _: *const Tree(usize).Node,
+                    _: u8,
+                    _: usize,
+                    _: usize,
+                    ctx: ctx_t,
+                ) !bool {
+                    ctx.count.* += 1;
+                    return false;
+                }
+            }.f;
+            ts.for_each(ctx_v, fun);
+            try std.testing.expectEqual(1, count);
+        }
     }
 
     inline for (ValueTypes) |T| {
@@ -1156,17 +1177,18 @@ test "insert many keys" {
         };
         const ctx_v = ctx_t{ .count = &count, .lines = map };
         const fun = struct {
-            fn f(node: *const Tree(T).Node, key: []const u8, _: usize, _: usize, context: ctx_t) void {
+            fn f(node: *const Tree(T).Node, key: []const u8, _: usize, _: usize, context: ctx_t) !bool {
                 if (node.leaf) |leaf| {
                     context.count.* += 1;
 
                     if (context.lines.get(key)) |val| {
-                        std.testing.expectEqual(valAsType(T, val), leaf.value) catch unreachable;
+                        try std.testing.expectEqual(valAsType(T, val), leaf.value);
                     } else {
                         std.debug.print("key: {s} value: {?} not found\n", .{ key, leaf.value });
-                        assert(false);
+                        return error.KeyNotFound;
                     }
                 }
+                return true;
             }
         }.f;
         try t.for_each_with_key(tal, ctx_v, fun);
