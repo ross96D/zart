@@ -54,9 +54,9 @@ pub fn Tree(comptime T: type) type {
                     }
                 }
 
-                fn for_each(self: *const Partial, level: usize, key_size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
+                fn for_each(self: *const Partial, level: usize, key_size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) error{Stop}!void {
                     if (self.node1.ptr) |node| {
-                        node.for_each(self.node1.label, level, key_size + self.length, ctx, fun) catch return;
+                        try node.for_each(self.node1.label, level, key_size + self.length, ctx, fun);
                     }
                 }
 
@@ -320,7 +320,7 @@ pub fn Tree(comptime T: type) type {
 
             inline fn start_for_each(self: *const Node, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 switch (self.node) {
-                    inline else => |v| v.for_each(1, 1, ctx, fun),
+                    inline else => |v| v.for_each(1, 1, ctx, fun) catch return,
                 }
             }
             inline fn for_each(
@@ -330,12 +330,14 @@ pub fn Tree(comptime T: type) type {
                 key_size: usize,
                 ctx: anytype,
                 fun: FnYield(@TypeOf(ctx)),
-            ) !void {
+            ) error{Stop}!void {
                 if (!(fun(self, label, level, key_size, ctx) catch false)) {
                     return error.Stop;
                 }
                 switch (self.node) {
-                    inline else => |v| v.for_each(level + 1, key_size + 1, ctx, fun),
+                    inline else => |v| v.for_each(level + 1, key_size + 1, ctx, fun) catch {
+                        return error.Stop;
+                    },
                 }
             }
 
@@ -435,9 +437,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node3, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node3, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) error{Stop}!void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun) catch return;
+                    try self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
                 }
             }
 
@@ -498,9 +500,9 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node16, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node16, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) error{Stop}!void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun) catch return;
+                    try self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
                 }
             }
 
@@ -547,10 +549,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node48, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node48, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) error{Stop}!void {
                 for (0..self.childs) |i| {
                     const label = std.mem.indexOf(u8, &self.idxs, &[_]u8{@intCast(i)});
-                    self.ptrs[i].?.for_each(@intCast(label.?), level, size, ctx, fun) catch return;
+                    try self.ptrs[i].?.for_each(@intCast(label.?), level, size, ctx, fun);
                 }
             }
 
@@ -592,10 +594,10 @@ pub fn Tree(comptime T: type) type {
                 }
             }
 
-            fn for_each(self: *const Node256, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
+            fn for_each(self: *const Node256, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) error{Stop}!void {
                 for (self.idxs, 0..) |node, i| {
                     if (node) |n| {
-                        n.for_each(@intCast(i), level, size, ctx, fun) catch return;
+                        try n.for_each(@intCast(i), level, size, ctx, fun);
                     }
                 }
             }
