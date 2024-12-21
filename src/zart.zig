@@ -56,7 +56,7 @@ pub fn Tree(comptime T: type) type {
 
                 fn for_each(self: *const Partial, level: usize, key_size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                     if (self.node1.ptr) |node| {
-                        node.for_each(self.node1.label, level, key_size + self.length, ctx, fun);
+                        node.for_each(self.node1.label, level, key_size + self.length, ctx, fun) catch return;
                     }
                 }
 
@@ -330,9 +330,9 @@ pub fn Tree(comptime T: type) type {
                 key_size: usize,
                 ctx: anytype,
                 fun: FnYield(@TypeOf(ctx)),
-            ) void {
+            ) !void {
                 if (!(fun(self, label, level, key_size, ctx) catch false)) {
-                    return;
+                    return error.Stop;
                 }
                 switch (self.node) {
                     inline else => |v| v.for_each(level + 1, key_size + 1, ctx, fun),
@@ -437,7 +437,7 @@ pub fn Tree(comptime T: type) type {
 
             fn for_each(self: *const Node3, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun) catch return;
                 }
             }
 
@@ -500,7 +500,7 @@ pub fn Tree(comptime T: type) type {
 
             fn for_each(self: *const Node16, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
-                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun);
+                    self.ptrs[i].?.for_each(self.labels[i], level, size, ctx, fun) catch return;
                 }
             }
 
@@ -550,7 +550,7 @@ pub fn Tree(comptime T: type) type {
             fn for_each(self: *const Node48, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (0..self.childs) |i| {
                     const label = std.mem.indexOf(u8, &self.idxs, &[_]u8{@intCast(i)});
-                    self.ptrs[i].?.for_each(@intCast(label.?), level, size, ctx, fun);
+                    self.ptrs[i].?.for_each(@intCast(label.?), level, size, ctx, fun) catch return;
                 }
             }
 
@@ -595,7 +595,7 @@ pub fn Tree(comptime T: type) type {
             fn for_each(self: *const Node256, level: usize, size: usize, ctx: anytype, fun: FnYield(@TypeOf(ctx))) void {
                 for (self.idxs, 0..) |node, i| {
                     if (node) |n| {
-                        n.for_each(@intCast(i), level, size, ctx, fun);
+                        n.for_each(@intCast(i), level, size, ctx, fun) catch return;
                     }
                 }
             }
