@@ -103,7 +103,7 @@ fn tests(
         const lib_unit_tests = b.addTest(.{
             .name = "test_pool",
             .root_source_file = b.path("src/mem_pool.zig"),
-            .test_runner = b.path("test_runner.zig"),
+            .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
             .target = target,
             .optimize = optimize,
         });
@@ -123,7 +123,7 @@ fn tests(
         const lib_unit_tests = b.addTest(.{
             .name = "test_pool",
             .root_source_file = b.path("src/zart.zig"),
-            .test_runner = b.path("test_runner.zig"),
+            .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
             .target = target,
             .optimize = optimize,
         });

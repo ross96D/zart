@@ -40,12 +40,13 @@ const LevelsCollector = struct {
         std.debug.print("avg: {d} max: {d} min: {d}\n\n", .{ avg, max, min });
     }
 
-    fn for_each_yield(node: *const Art(usize).Node, label: u8, level: usize, _: usize, self: *Self) void {
+    fn for_each_yield(node: *const Art(usize).Node, label: u8, level: usize, _: usize, self: *Self) !bool {
         _ = label;
         if (node.leaf) |_| {
             self.levels.append(level) catch unreachable;
             // std.debug.print("level {d}\n", .{level});
         }
+        return true;
     }
 };
 
@@ -57,7 +58,7 @@ fn bench(a: std.mem.Allocator, container: anytype, comptime appen_fn: anytype, c
         fn func(line: [:0]const u8, linei: usize, _container: anytype, _: anytype, comptime U: type) anyerror!void {
             _ = U;
             const r = appen_fn(_container, line, linei);
-            if (@typeInfo(@TypeOf(r)) == .ErrorUnion) {
+            if (@typeInfo(@TypeOf(r)) == .error_union) {
                 _ = try r;
             }
         }

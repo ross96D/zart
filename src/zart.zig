@@ -1009,10 +1009,10 @@ const test_all_ValueTypes = false;
 const ValueTypes = if (test_all_ValueTypes) [_]type{ u8, u16, u32, u64, usize, f32, f64, bool, [24]u8, [3]usize } else [_]type{usize};
 fn valAsType(comptime T: type, i: usize) T {
     return switch (@typeInfo(T)) {
-        .Int => @truncate(i),
-        .Bool => i != 0,
-        .Float => @floatFromInt(i),
-        .Array => blk: {
+        .int => @truncate(i),
+        .bool => i != 0,
+        .float => @floatFromInt(i),
+        .array => blk: {
             const v: T = undefined;
             for (v) |*it| {
                 it.* = @truncate(i);
@@ -1244,7 +1244,7 @@ test "promote" {
     var seed: [32]u8 = undefined;
     try std.posix.getrandom(&seed);
     std.debug.print("seed {d}\n", .{&seed});
-    var chacha = std.rand.ChaCha.init(seed);
+    var chacha = std.Random.ChaCha.init(seed);
     const rand = chacha.random();
 
     var pool = Z.NodePool.init(tal);

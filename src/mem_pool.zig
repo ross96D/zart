@@ -82,10 +82,7 @@ pub fn Pool(T: type, config: PoolConfig) type {
             }
 
             fn reuse(self: *BlockReusableItems, allocated_list: *const AllocatedList) ?*T {
-                if (self.reusable.items.len == 0) {
-                    return null;
-                }
-                const index_item = self.reusable.pop();
+                const index_item = self.reusable.pop() orelse return null;
                 const index_block = allocated_list.index_of(self.ptr).?;
                 const block = allocated_list.slice()[index_block];
                 return &block.values[index_item];
